@@ -11,9 +11,25 @@ function App() {
                 <Toaster
                     position="top-right"
                     toastOptions={{
+                        style: {
+                            background: '#1c2233',
+                            color: '#e8ecf4',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            borderRadius: '10px',
+                            fontSize: '13px',
+                            fontFamily: "'Inter', sans-serif",
+                            boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
+                        },
                         success: {
-                            theme: {
-                                primary: '#4aed88',
+                            iconTheme: {
+                                primary: '#4ade80',
+                                secondary: '#1c2233',
+                            },
+                        },
+                        error: {
+                            iconTheme: {
+                                primary: '#f87171',
+                                secondary: '#1c2233',
                             },
                         },
                     }}

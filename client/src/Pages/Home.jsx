@@ -1,99 +1,88 @@
-import React , {useState} from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
+import { v4 as uuidV4 } from 'uuid';
 
-
-import toast from 'react-hot-toast'
-import {v4 as uuidV4} from 'uuid';
 function Home() {
     const navigate = useNavigate();
-    const [roomId,setRoomId]=useState("");
-    const createNewRoom = (e)=>{
-        e.preventDefault(); 
+    const [roomId, setRoomId] = useState('');
+    const [username, setUsername] = useState('');
+
+    const createNewRoom = (e) => {
+        e.preventDefault();
         const id = uuidV4();
-        console.log(id);
         setRoomId(id);
-
-        // toast popup
-toast.success('Created a new room ');
-
-    }
-
-
-    const [username,setUsername]=useState('');
-
-
-    // join room
-
-    const joinRoom =()=>{
-        if(!roomId || !username){
-            toast.error("Room Id and Username is required");
-            return ;
-        }
-        // if all aare present then redirect it
-        navigate(`/editor/${roomId}`,{
-            state:{
-                username
-            }
-        })
+        toast.success('Created a new room');
     };
 
-    const handleInputEnter =(e)=>{
-        if(e.code === 'Enter'){
+    const joinRoom = () => {
+        if (!roomId || !username) {
+            toast.error('Room ID and Username are required');
+            return;
+        }
+        navigate(`/editor/${roomId}`, {
+            state: { username },
+        });
+    };
+
+    const handleInputEnter = (e) => {
+        if (e.code === 'Enter') {
             joinRoom();
         }
     };
+
     return (
-        <div className='container-fluid'>
-
-            <div className='row justify-content-center align-items-center min-vh-100'>
-                <div  />
-
+        <main className="homePage">
+            <section className="homeCard" aria-label="Join room">
                 <img
-                    src={'/images/synccode_logo_highres.png'}
+                    className="homeLogo"
+                    src="/images/synccode_logo_highres.png"
                     alt="SyncCode Logo"
                 />
 
-                <h1 className='text-center'>
-                    Real Time Collaborative Code Editor
-                </h1>
+                <div className="homeHeading">
+                    <h1>SyncCode</h1>
+                    <p>Real-time collaborative code editor</p>
+                </div>
 
-                <div className="form-group">
-                    <label>Enter the room id</label>
+                <div className="homeForm">
+                    <label htmlFor="roomId">Room ID</label>
                     <input
+                        id="roomId"
                         type="text"
-                        placeholder="Room ID"
+                        placeholder="Paste or create a room ID"
                         value={roomId}
-                        onChange={(e)=>setRoomId(e.target.value)}
+                        onChange={(e) => setRoomId(e.target.value)}
                         onKeyUp={handleInputEnter}
                     />
-                    <br />
 
-                    <label>Enter the user name</label>
+                    <label htmlFor="username">Username</label>
                     <input
+                        id="username"
                         type="text"
-                        placeholder="User Name"
-                        onChange ={(e)=>setUsername(e.target.value)}
+                        placeholder="Your display name"
+                        onChange={(e) => setUsername(e.target.value)}
                         value={username}
                         onKeyUp={handleInputEnter}
                     />
                 </div>
 
-                <button onClick={joinRoom} className='btn btn-primary mt-4'>
-                    JOIN
+                <button type="button" onClick={joinRoom} className="joinButton">
+                    Join Room
                 </button>
 
-                <div />
-
-                <p>
-                    Didn't have a roomId?{" "}
-                    <span onClick={createNewRoom} style={{ cursor: "pointer" }}>
-                        CREATE NOW
-                    </span>
+                <p className="newRoomText">
+                    No room yet?
+                    <button
+                        type="button"
+                        onClick={createNewRoom}
+                        className="createRoomButton"
+                    >
+                        Create one
+                    </button>
                 </p>
-
-            </div>
-
-        </div>
+            </section>
+        </main>
     );
 }
 
