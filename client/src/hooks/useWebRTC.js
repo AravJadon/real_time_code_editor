@@ -1,26 +1,29 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import ACTIONS from '../Actions';
+import { BACKEND_URL } from '../config';
 
-const ICE_SERVERS = [
+// Fallback STUN-only config (used if server doesn't return TURN credentials)
+const FALLBACK_ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    // Free TURN relay servers — required for users behind restrictive NATs
-    {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-    },
-    {
-        urls: 'turns:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
-    },
 ];
+
+// Fetch TURN credentials from our server (which gets them from Metered.ca)
+async function fetchIceServers() {
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/turn-credentials`);
+        if (response.ok) {
+            const data = await response.json();
+            if (data.iceServers && data.iceServers.length > 0) {
+                console.log(`Fetched ${data.iceServers.length} ICE servers (including TURN)`);
+                return data.iceServers;
+            }
+        }
+    } catch (err) {
+        console.warn('Failed to fetch TURN credentials, using STUN fallback:', err.message);
+    }
+    return FALLBACK_ICE_SERVERS;
+}
 
 function getPreferredMediaStream() {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -56,6 +59,7 @@ export const useWebRTC = (socket, roomId, username) => {
     const localStreamRef = useRef(null);
     const hasJoinedCallRef = useRef(false);
     const iceCandidateBufferRef = useRef({});
+    const iceServersRef = useRef(FALLBACK_ICE_SERVERS);
 
     const stopLocalStream = useCallback(() => {
         if (localStreamRef.current) {
@@ -106,7 +110,7 @@ export const useWebRTC = (socket, roomId, username) => {
             return peersRef.current[remoteSocketId];
         }
 
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
 
         // Add our local tracks to the connection
         localStreamRef.current.getTracks().forEach((track) => {
@@ -205,6 +209,9 @@ export const useWebRTC = (socket, roomId, username) => {
                 }
                 return;
             }
+
+            // Fetch fresh TURN credentials before starting the call
+            iceServersRef.current = await fetchIceServers();
 
             const stream = await getPreferredMediaStream();
             setLocalStream(stream);
