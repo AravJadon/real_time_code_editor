@@ -4,7 +4,22 @@ import ACTIONS from '../Actions';
 const ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
+    // Free TURN relay servers — required for users behind restrictive NATs
+    {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+    },
+    {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+    },
+    {
+        urls: 'turns:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+    },
 ];
 
 function getPreferredMediaStream() {
@@ -130,8 +145,13 @@ export const useWebRTC = (socket, roomId, username) => {
         };
 
         pc.oniceconnectionstatechange = () => {
-            if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                console.warn(`ICE connection to ${remoteSocketId} ${pc.iceConnectionState}`);
+            const state = pc.iceConnectionState;
+            console.log(`ICE connection to ${remoteSocketId}: ${state}`);
+
+            if (state === 'failed') {
+                // Attempt an ICE restart before giving up
+                console.warn(`ICE failed for ${remoteSocketId}, attempting restart…`);
+                pc.restartIce();
             }
         };
 
