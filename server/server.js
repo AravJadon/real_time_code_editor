@@ -31,28 +31,27 @@ app.use('/api', runRoutes);
 app.use('/api', aiRoutes);
 
 // TURN credentials endpoint — provides ICE server config for WebRTC
-app.get('/api/turn-credentials', async (req, res) => {
-    const apiKey = process.env.METERED_TURN_API_KEY;
-
+app.get('/api/turn-credentials', (req, res) => {
     // Always include free STUN servers
     const iceServers = [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
     ];
 
-    if (apiKey) {
-        try {
-            const response = await fetch(
-                `https://synccode.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`
-            );
+    // Add TURN servers from environment variables if configured
+    const turnUrls = process.env.TURN_URLS;
+    const turnUsername = process.env.TURN_USERNAME;
+    const turnCredential = process.env.TURN_CREDENTIAL;
 
-            if (response.ok) {
-                const turnServers = await response.json();
-                iceServers.push(...turnServers);
-            }
-        } catch (err) {
-            console.warn('Failed to fetch TURN credentials:', err.message);
-        }
+    if (turnUrls && turnUsername && turnCredential) {
+        // TURN_URLS can be comma-separated for multiple servers
+        turnUrls.split(',').forEach((url) => {
+            iceServers.push({
+                urls: url.trim(),
+                username: turnUsername,
+                credential: turnCredential,
+            });
+        });
     }
 
     res.json({ iceServers });
