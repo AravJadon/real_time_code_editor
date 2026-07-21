@@ -55,15 +55,7 @@ const CamOffIcon = () => (
     </svg>
 );
 
-const ScreenShareIcon = () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-        <line x1="8" y1="21" x2="16" y2="21" />
-        <line x1="12" y1="17" x2="12" y2="21" />
-        <polyline points="9 10 12 7 15 10" />
-        <line x1="12" y1="7" x2="12" y2="14" />
-    </svg>
-);
+
 
 const EndCallIcon = () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -78,11 +70,9 @@ const VideoCall = ({
     peerUsernames,
     isMuted,
     isCameraOff,
-    isScreenSharing,
     callError,
     onToggleMic,
     onToggleCamera,
-    onToggleScreenShare,
     onEndCall,
     currentUsername,
 }) => {
@@ -146,10 +136,10 @@ const VideoCall = ({
 
             <div className="videoGrid">
                 {localStream && (
-                    <div className={`videoWrapper ${isScreenSharing ? '' : ''}`}>
+                    <div className="videoWrapper">
                         <VideoElement stream={localStream} isLocal={true} />
                         <span className="videoLabel">
-                            {currentUsername || 'You'} {isScreenSharing ? '(Sharing)' : ''}
+                            {currentUsername || 'You'}
                         </span>
                     </div>
                 )}
@@ -188,14 +178,7 @@ const VideoCall = ({
                 >
                     {isCameraOff ? <CamOffIcon /> : <CamIcon />}
                 </button>
-                <button
-                    type="button"
-                    className={`videoControlBtn ${isScreenSharing ? 'active' : ''}`}
-                    onClick={onToggleScreenShare}
-                    title={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
-                >
-                    <ScreenShareIcon />
-                </button>
+
                 <button
                     type="button"
                     className="videoControlBtn videoControlBtn--danger"

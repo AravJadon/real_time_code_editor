@@ -146,14 +146,12 @@ const EditorPage = () => {
         isMuted,
         isCameraOff,
         isVideoCallActive,
-        isScreenSharing,
         callError,
         callRoomInfo,
         startCall,
         endCall,
         toggleMic,
         toggleCamera,
-        toggleScreenShare,
     } = useWebRTC(socketClient, roomId, username);
 
     const activeFile = files.find((f) => f._id === activeFileId);
@@ -818,11 +816,9 @@ const EditorPage = () => {
                     peerUsernames={peerUsernames}
                     isMuted={isMuted}
                     isCameraOff={isCameraOff}
-                    isScreenSharing={isScreenSharing}
                     callError={callError}
                     onToggleMic={toggleMic}
                     onToggleCamera={toggleCamera}
-                    onToggleScreenShare={toggleScreenShare}
                     onEndCall={endCall}
                     currentUsername={username}
                 />
