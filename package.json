@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "npm --prefix client ci && npm --prefix client run build && npm --prefix server ci --omit=dev",
+    "build": "npm --prefix client ci && npm --prefix client run build && npm --prefix server ci --production",
     "start": "npm --prefix server start"
   },
   "engines": {
