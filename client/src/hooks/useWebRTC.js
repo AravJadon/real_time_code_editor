@@ -123,6 +123,18 @@ export const useWebRTC = (socket, roomId, username) => {
             pc.addTrack(track, localStreamRef.current);
         });
 
+        // If we are currently screen-sharing, replace the video sender with the screen track
+        // so the new peer sees the screen, not our camera
+        const activeScreenTrack = screenStreamRef.current?.getVideoTracks()[0];
+        if (activeScreenTrack && !activeScreenTrack.ended) {
+            const videoSender = pc.getSenders().find((s) => s.track?.kind === 'video');
+            if (videoSender) {
+                videoSender.replaceTrack(activeScreenTrack).catch((err) => {
+                    console.warn('Failed to replace track with screen for new peer:', err);
+                });
+            }
+        }
+
         // Handle ICE candidates — send them to the remote peer via the server
         pc.onicecandidate = (event) => {
             if (event.candidate && socket?.connected) {
@@ -271,17 +283,29 @@ export const useWebRTC = (socket, roomId, username) => {
         }
     }, []);
 
-    const toggleScreenShare = useCallback(async () => {
-        if (isScreenSharing) {
-            // Stop screen sharing — revert to camera
-            stopScreenStream();
-            const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-            if (cameraTrack) {
-                Object.values(peersRef.current).forEach((pc) => {
-                    const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-                    if (sender) sender.replaceTrack(cameraTrack);
+    // Helper: revert all peer connection video senders back to the camera track
+    const revertToCameraTrack = useCallback(() => {
+        const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
+        if (!cameraTrack) return;
+
+        Object.values(peersRef.current).forEach((pc) => {
+            const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+            if (sender) {
+                sender.replaceTrack(cameraTrack).catch((err) => {
+                    console.warn('Failed to revert to camera track:', err);
                 });
             }
+        });
+
+        // Restore local preview to camera stream
+        setLocalStream(localStreamRef.current);
+    }, []);
+
+    const toggleScreenShare = useCallback(async () => {
+        if (isScreenSharing) {
+            // Stop screen sharing — revert tracks FIRST, then stop the stream
+            revertToCameraTrack();
+            stopScreenStream();
             return;
         }
 
@@ -298,19 +322,20 @@ export const useWebRTC = (socket, roomId, username) => {
             // Replace camera track with screen track in all peer connections
             Object.values(peersRef.current).forEach((pc) => {
                 const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-                if (sender) sender.replaceTrack(screenTrack);
-            });
-
-            // When user stops sharing via browser UI
-            screenTrack.onended = () => {
-                stopScreenStream();
-                const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-                if (cameraTrack) {
-                    Object.values(peersRef.current).forEach((pc) => {
-                        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-                        if (sender) sender.replaceTrack(cameraTrack);
+                if (sender) {
+                    sender.replaceTrack(screenTrack).catch((err) => {
+                        console.warn('Failed to replace with screen track:', err);
                     });
                 }
+            });
+
+            // Show screen in local preview so sharer can see what they're sharing
+            setLocalStream(screenStream);
+
+            // When user stops sharing via browser UI ("Stop sharing" button)
+            screenTrack.onended = () => {
+                revertToCameraTrack();
+                stopScreenStream();
             };
         } catch (err) {
             console.error('Screen share failed:', err);
@@ -318,7 +343,7 @@ export const useWebRTC = (socket, roomId, username) => {
                 setCallError('Could not start screen sharing.');
             }
         }
-    }, [isScreenSharing, stopScreenStream]);
+    }, [isScreenSharing, stopScreenStream, revertToCameraTrack]);
 
     // Socket event handlers
     useEffect(() => {
