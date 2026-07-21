@@ -1,17 +1,7 @@
 const express = require('express');
-const SUPPORTED_LANGUAGES = require('../languages');
 const { runCode } = require('../services/judge0Service');
 
 const router = express.Router();
-
-router.get('/languages', (req, res) => {
-    const languages = Object.entries(SUPPORTED_LANGUAGES).map(([value, language]) => ({
-        value,
-        label: language.label,
-    }));
-
-    res.json(languages);
-});
 
 router.post('/run', async (req, res) => {
     const code = req.body.code;

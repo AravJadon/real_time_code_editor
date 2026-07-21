@@ -1,9 +1,4 @@
 const mongoose = require('mongoose');
-const path = require('path');
-const loadEnvFile = require('./utils/loadEnv');
-
-loadEnvFile(path.join(__dirname, '..', '.env'));
-loadEnvFile(path.join(__dirname, '.env'));
 
 const MONGODB_URI =
     process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/synccode';

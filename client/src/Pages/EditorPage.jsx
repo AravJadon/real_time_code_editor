@@ -407,7 +407,7 @@ const EditorPage = () => {
             toast.error('Open a file to run it.');
             return;
         }
-
+// read the current written code using this variable -> codeRef.current
         const codeToRun = codeRef.current;
 
         if (!codeToRun || codeToRun.trim() === '') {

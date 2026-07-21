@@ -1,7 +1,14 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { v4 as uuidV4 } from 'uuid';
+
+function createRoomId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+    }
+
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function Home() {
     const navigate = useNavigate();
@@ -10,7 +17,7 @@ function Home() {
 
     const createNewRoom = (e) => {
         e.preventDefault();
-        const id = uuidV4();
+        const id = createRoomId();
         setRoomId(id);
         toast.success('Created a new room');
     };

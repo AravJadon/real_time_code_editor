@@ -1,5 +1,13 @@
 const https = require('https');
 
+const AI_MODELS = (process.env.AI_MODELS || process.env.AI_MODEL || 'gemini-2.5-flash,gemini-3.5-flash')
+    .split(',')
+    .map((model) => model.trim())
+    .filter(Boolean);
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 120000);
+const MAX_RETRIES = Number(process.env.AI_MAX_RETRIES || 2);
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+
 const AI_SYSTEM_PROMPTS = {
     suggest:
         'You are an expert code completion assistant. Given the code context, provide a natural continuation of the code. Return only the code that should come next. No explanations, markdown fences, or extra comments.',
@@ -15,16 +23,28 @@ const AI_SYSTEM_PROMPTS = {
 
 const VALID_ACTIONS = ['suggest', 'explain', 'review', 'bugfix', 'chat'];
 
+function wait(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
+function trimText(value, maxLength) {
+    if (typeof value !== 'string') return '';
+    if (value.length <= maxLength) return value;
+    return value.slice(value.length - maxLength);
+}
+
 function buildAIMessages(action, code, language, prompt, conversationHistory) {
     const systemPrompt = AI_SYSTEM_PROMPTS[action] || AI_SYSTEM_PROMPTS.chat;
     const messages = [{ role: 'system', content: systemPrompt }];
 
     if (action === 'chat' && Array.isArray(conversationHistory)) {
-        conversationHistory.forEach((message) => {
+        conversationHistory.slice(-8).forEach((message) => {
             if (message.role === 'user' || message.role === 'assistant') {
                 messages.push({
                     role: message.role,
-                    content: message.content,
+                    content: trimText(message.content, 2000),
                 });
             }
         });
@@ -34,11 +54,11 @@ function buildAIMessages(action, code, language, prompt, conversationHistory) {
 
     if (code) {
         userContent += `**Language:** ${language || 'Unknown'}\n\n`;
-        userContent += `\`\`\`${language || ''}\n${code}\n\`\`\`\n\n`;
+        userContent += `\`\`\`${language || ''}\n${trimText(code, 10000)}\n\`\`\`\n\n`;
     }
 
     if (prompt) {
-        userContent += prompt;
+        userContent += trimText(prompt, 4000);
     }
 
     if (!userContent) {
@@ -93,8 +113,8 @@ function requestAI(body) {
             }
         );
 
-        request.setTimeout(60000, () => {
-            request.destroy(new Error('AI API request timed out (60s).'));
+        request.setTimeout(AI_TIMEOUT_MS, () => {
+            request.destroy(new Error(`AI API request timed out (${Math.round(AI_TIMEOUT_MS / 1000)}s).`));
         });
 
         request.on('error', reject);
@@ -103,13 +123,41 @@ function requestAI(body) {
     });
 }
 
+async function requestAIWithRetry(body) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            const response = await requestAI(body);
+
+            if (response.ok || !RETRYABLE_STATUS_CODES.has(response.statusCode) || attempt === MAX_RETRIES) {
+                return response;
+            }
+
+            lastError = new Error(readAIError(response));
+        } catch (error) {
+            lastError = error;
+
+            if (attempt === MAX_RETRIES) {
+                throw error;
+            }
+        }
+
+        await wait(750 * (attempt + 1));
+    }
+
+    throw lastError || new Error('AI API request failed.');
+}
+
 function readAIError(response) {
     if (response.data && response.data.error && response.data.error.message) {
         return response.data.error.message;
     }
 
     if (response.data && response.data.error) {
-        return response.data.error;
+        return typeof response.data.error === 'string'
+            ? response.data.error
+            : JSON.stringify(response.data.error);
     }
 
     return `AI API request failed with status ${response.statusCode}`;
@@ -144,13 +192,30 @@ async function askAI(options) {
         options.conversationHistory
     );
 
-    const response = await requestAI({
-        model: 'gemini-3.5-flash',
-        messages,
-        temperature: action === 'suggest' ? 0.3 : 0.7,
-        max_tokens: action === 'suggest' ? 512 : 2048,
-        stream: false,
-    });
+    let response = null;
+    let selectedModel = AI_MODELS[0] || 'gemini-2.5-flash';
+
+    for (const model of AI_MODELS) {
+        selectedModel = model;
+        response = await requestAIWithRetry({
+            model,
+            messages,
+            reasoning_effort: 'low',
+            temperature: action === 'suggest' ? 0.3 : 0.7,
+            max_tokens: action === 'suggest' ? 512 : 1024,
+            stream: false,
+        });
+
+        if (response.ok || !RETRYABLE_STATUS_CODES.has(response.statusCode)) {
+            break;
+        }
+    }
+
+    if (!response) {
+        const error = new Error('No AI model is configured.');
+        error.statusCode = 500;
+        throw error;
+    }
 
     if (!response.ok) {
         const error = new Error(readAIError(response));
@@ -174,7 +239,7 @@ async function askAI(options) {
     return {
         response: responseContent,
         action,
-        model: response.data.model || 'gemini-3.5-flash',
+        model: response.data.model || selectedModel,
         usage: response.data.usage || null,
     };
 }

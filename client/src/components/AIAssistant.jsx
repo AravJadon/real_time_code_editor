@@ -311,7 +311,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                 <div className="aiAssistant__headerLeft">
                     <span className="aiAssistant__sparkle"><SparkleIcon /></span>
                     <span className="aiAssistant__title">AI Assistant</span>
-                    <span className="aiAssistant__model">Gemini 3.5 Flash</span>
+                    <span className="aiAssistant__model">Gemini Flash</span>
                 </div>
                 {messages.length > 0 && (
                     <button className="aiAssistant__clearBtn" onClick={handleClearChat} title="Clear conversation">

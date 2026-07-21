@@ -1,17 +1,19 @@
+const path = require('path');
+const loadEnvFile = require('./utils/loadEnv');
+
+// Load environment variables first
+loadEnvFile(path.join(__dirname, '..', '.env'));
+loadEnvFile(path.join(__dirname, '.env'));
+
 const express = require('express');
 const http = require('http');
-const path = require('path');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
-const loadEnvFile = require('./utils/loadEnv');
 const { connectDB } = require('./db');
 const runRoutes = require('./routes/runRoutes');
 const aiRoutes = require('./routes/aiRoutes');
 const registerSocketHandlers = require('./socket/socketHandlers');
-
-loadEnvFile(path.join(__dirname, '..', '.env'));
-loadEnvFile(path.join(__dirname, '.env'));
 
 const app = express();
 const server = http.createServer(app);

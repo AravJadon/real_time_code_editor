@@ -29,10 +29,6 @@ const fileSchema = new mongoose.Schema(
             type: String,
             default: 'javascript',
         },
-        order: {
-            type: Number,
-            default: 0,
-        },
     },
     {
         timestamps: true,

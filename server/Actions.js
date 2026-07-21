@@ -1,9 +1,7 @@
 const ACTIONS = {
     JOIN: 'join',
     JOINED: 'joined',
-    SYNC_CODE: 'sync_code',
     CODE_CHANGE: 'code_change',
-    LEAVE: 'leave',
     DISCONNECTED: 'disconnected',
     LANGUAGE_CHANGE: 'language_change',
 
@@ -11,9 +9,6 @@ const ACTIONS = {
     FILE_CREATE: 'file_create',
     FILE_DELETE: 'file_delete',
     FILE_RENAME: 'file_rename',
-    FILE_SELECT: 'file_select',
-    FOLDER_CREATE: 'folder_create',
-    FOLDER_DELETE: 'folder_delete',
     SYNC_FILES: 'sync_files',
     SET_MAIN_FILE: 'set_main_file',
 

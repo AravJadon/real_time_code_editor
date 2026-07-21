@@ -9,5 +9,7 @@ const configuredBackendIsLocalhost =
 
 export const BACKEND_URL =
     !configuredBackendUrl || (!isLocalhostClient && configuredBackendIsLocalhost)
-        ? `${window.location.protocol}//${window.location.hostname}:5000`
+        ? isLocalhostClient
+            ? `${window.location.protocol}//${window.location.hostname}:5000`
+            : window.location.origin
         : configuredBackendUrl;
