@@ -67,9 +67,18 @@ app.get('/api/turn-credentials', async (req, res) => {
 
         if (response.ok) {
             const data = await response.json();
-            if (data.v && data.v.iceServers) {
-                cachedIceServers = [...fallback, ...data.v.iceServers];
+            const xirsys = data.v && data.v.iceServers;
+            if (xirsys && xirsys.urls && xirsys.username && xirsys.credential) {
+                // Xirsys returns { username, urls: [...], credential }
+                // Convert each URL into a separate ICE server entry
+                const turnServers = xirsys.urls.map((url) => ({
+                    urls: url,
+                    username: xirsys.username,
+                    credential: xirsys.credential,
+                }));
+                cachedIceServers = [...fallback, ...turnServers];
                 cacheExpiry = Date.now() + 5 * 60 * 1000; // 5 min cache
+                console.log(`Fetched ${turnServers.length} TURN servers from Xirsys`);
                 return res.json({ iceServers: cachedIceServers });
             }
         }
