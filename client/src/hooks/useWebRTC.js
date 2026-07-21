@@ -8,20 +8,36 @@ const FALLBACK_ICE_SERVERS = [
     { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
-// Fetch TURN credentials from our server (which gets them from Metered.ca)
+const CONNECTION_TIMEOUT_MS = 15000; // 15 seconds to establish connection
+const MAX_RECONNECT_ATTEMPTS = 3;
+
+// Fetch TURN credentials from our server (with retry)
 async function fetchIceServers() {
-    try {
-        const response = await fetch(`${BACKEND_URL}/api/turn-credentials`);
-        if (response.ok) {
-            const data = await response.json();
-            if (data.iceServers && data.iceServers.length > 0) {
-                console.log(`Fetched ${data.iceServers.length} ICE servers (including TURN)`);
-                return data.iceServers;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000);
+
+            const response = await fetch(`${BACKEND_URL}/api/turn-credentials`, {
+                signal: controller.signal,
+            });
+            clearTimeout(timeout);
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data.iceServers && data.iceServers.length > 2) {
+                    // More than just STUN = we have TURN servers
+                    console.log(`Fetched ${data.iceServers.length} ICE servers (including TURN)`);
+                    return data.iceServers;
+                }
             }
+        } catch (err) {
+            console.warn(`TURN fetch attempt ${attempt + 1} failed:`, err.message);
         }
-    } catch (err) {
-        console.warn('Failed to fetch TURN credentials, using STUN fallback:', err.message);
+        // Small delay before retry
+        if (attempt < 1) await new Promise((r) => setTimeout(r, 1000));
     }
+    console.warn('Using STUN-only fallback (no TURN servers available)');
     return FALLBACK_ICE_SERVERS;
 }
 
@@ -60,6 +76,8 @@ export const useWebRTC = (socket, roomId, username) => {
     const hasJoinedCallRef = useRef(false);
     const iceCandidateBufferRef = useRef({});
     const iceServersRef = useRef(FALLBACK_ICE_SERVERS);
+    const reconnectAttemptsRef = useRef({});
+    const connectionTimersRef = useRef({});
 
     const stopLocalStream = useCallback(() => {
         if (localStreamRef.current) {
@@ -69,13 +87,25 @@ export const useWebRTC = (socket, roomId, username) => {
         setLocalStream(null);
     }, []);
 
+    const clearConnectionTimer = useCallback((socketId) => {
+        if (connectionTimersRef.current[socketId]) {
+            clearTimeout(connectionTimersRef.current[socketId]);
+            delete connectionTimersRef.current[socketId];
+        }
+    }, []);
+
     const cleanupPeer = useCallback((socketId) => {
+        clearConnectionTimer(socketId);
         const pc = peersRef.current[socketId];
         if (pc) {
+            pc.onicecandidate = null;
+            pc.ontrack = null;
+            pc.oniceconnectionstatechange = null;
             pc.close();
             delete peersRef.current[socketId];
         }
         delete iceCandidateBufferRef.current[socketId];
+        delete reconnectAttemptsRef.current[socketId];
 
         setPeerStreams((prev) => {
             if (!prev[socketId]) return prev;
@@ -89,15 +119,50 @@ export const useWebRTC = (socket, roomId, username) => {
             delete next[socketId];
             return next;
         });
-    }, []);
+    }, [clearConnectionTimer]);
 
     const cleanupAllPeers = useCallback(() => {
         Object.keys(peersRef.current).forEach((socketId) => cleanupPeer(socketId));
+        Object.keys(connectionTimersRef.current).forEach((id) => clearTimeout(connectionTimersRef.current[id]));
         peersRef.current = {};
         iceCandidateBufferRef.current = {};
+        reconnectAttemptsRef.current = {};
+        connectionTimersRef.current = {};
         setPeerStreams({});
         setPeerUsernames({});
     }, [cleanupPeer]);
+
+    // Full reconnect: tear down old connection and create fresh offer
+    const reconnectToPeer = useCallback((remoteSocketId) => {
+        const attempts = reconnectAttemptsRef.current[remoteSocketId] || 0;
+        if (attempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.error(`Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached for ${remoteSocketId}`);
+            return;
+        }
+        if (!localStreamRef.current || !socket?.connected) return;
+
+        reconnectAttemptsRef.current[remoteSocketId] = attempts + 1;
+        console.log(`Reconnecting to ${remoteSocketId} (attempt ${attempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+
+        // Clean up old connection (but keep username)
+        clearConnectionTimer(remoteSocketId);
+        const pc = peersRef.current[remoteSocketId];
+        if (pc) {
+            pc.onicecandidate = null;
+            pc.ontrack = null;
+            pc.oniceconnectionstatechange = null;
+            pc.close();
+            delete peersRef.current[remoteSocketId];
+        }
+        delete iceCandidateBufferRef.current[remoteSocketId];
+
+        // Small delay before reconnecting
+        setTimeout(() => {
+            if (!localStreamRef.current || !socket?.connected) return;
+            // eslint-disable-next-line no-use-before-define
+            createOfferTo(remoteSocketId);
+        }, 1000 + attempts * 500);
+    }, [socket, clearConnectionTimer]);
 
     // Create an RTCPeerConnection to a remote peer
     const createPeerConnection = useCallback((remoteSocketId, remoteUsername) => {
@@ -105,9 +170,18 @@ export const useWebRTC = (socket, roomId, username) => {
             return null;
         }
 
-        // If we already have a connection to this peer, return it
+        // If we already have a HEALTHY connection to this peer, return it
         if (peersRef.current[remoteSocketId]) {
-            return peersRef.current[remoteSocketId];
+            const existing = peersRef.current[remoteSocketId];
+            if (existing.connectionState !== 'failed' && existing.connectionState !== 'closed') {
+                return existing;
+            }
+            // Connection is dead, clean it up
+            existing.onicecandidate = null;
+            existing.ontrack = null;
+            existing.oniceconnectionstatechange = null;
+            existing.close();
+            delete peersRef.current[remoteSocketId];
         }
 
         const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
@@ -131,6 +205,10 @@ export const useWebRTC = (socket, roomId, username) => {
         pc.ontrack = (event) => {
             const [remoteStream] = event.streams;
             if (remoteStream) {
+                // Connection succeeded — reset reconnect counter
+                reconnectAttemptsRef.current[remoteSocketId] = 0;
+                clearConnectionTimer(remoteSocketId);
+
                 setPeerStreams((prev) => ({
                     ...prev,
                     [remoteSocketId]: remoteStream,
@@ -142,10 +220,22 @@ export const useWebRTC = (socket, roomId, username) => {
             const state = pc.iceConnectionState;
             console.log(`ICE connection to ${remoteSocketId}: ${state}`);
 
-            if (state === 'failed') {
-                // Attempt an ICE restart before giving up
-                console.warn(`ICE failed for ${remoteSocketId}, attempting restart…`);
-                pc.restartIce();
+            if (state === 'connected' || state === 'completed') {
+                // Connection is healthy — clear any pending timers
+                clearConnectionTimer(remoteSocketId);
+                reconnectAttemptsRef.current[remoteSocketId] = 0;
+            } else if (state === 'failed') {
+                // ICE failed — do a full reconnection (not just restartIce)
+                console.warn(`ICE failed for ${remoteSocketId}, attempting full reconnect…`);
+                reconnectToPeer(remoteSocketId);
+            } else if (state === 'disconnected') {
+                // Disconnected is temporary — wait 5s, then reconnect if still disconnected
+                setTimeout(() => {
+                    if (peersRef.current[remoteSocketId]?.iceConnectionState === 'disconnected') {
+                        console.warn(`ICE still disconnected for ${remoteSocketId}, reconnecting…`);
+                        reconnectToPeer(remoteSocketId);
+                    }
+                }, 5000);
             }
         };
 
@@ -158,8 +248,18 @@ export const useWebRTC = (socket, roomId, username) => {
             }));
         }
 
+        // Set a connection timeout — if no track received in 15s, reconnect
+        clearConnectionTimer(remoteSocketId);
+        connectionTimersRef.current[remoteSocketId] = setTimeout(() => {
+            const currentPc = peersRef.current[remoteSocketId];
+            if (currentPc && currentPc.iceConnectionState !== 'connected' && currentPc.iceConnectionState !== 'completed') {
+                console.warn(`Connection timeout for ${remoteSocketId}, attempting reconnect…`);
+                reconnectToPeer(remoteSocketId);
+            }
+        }, CONNECTION_TIMEOUT_MS);
+
         return pc;
-    }, [socket]);
+    }, [socket, clearConnectionTimer, reconnectToPeer]);
 
     // Flush buffered ICE candidates once remote description is set
     const flushIceCandidateBuffer = useCallback(async (socketId) => {
@@ -183,7 +283,7 @@ export const useWebRTC = (socket, roomId, username) => {
         if (!pc) return;
 
         try {
-            const offer = await pc.createOffer();
+            const offer = await pc.createOffer({ iceRestart: true });
             await pc.setLocalDescription(offer);
 
             socket.emit(ACTIONS.VIDEO_CALL_OFFER, {
@@ -296,6 +396,17 @@ export const useWebRTC = (socket, roomId, username) => {
         // Incoming WebRTC offer — create answer
         const handleCallOffer = async ({ signal, callerSocketId }) => {
             if (!localStreamRef.current) return;
+
+            // If we already have a connection from a previous failed attempt, clean it up
+            if (peersRef.current[callerSocketId]) {
+                const oldPc = peersRef.current[callerSocketId];
+                oldPc.onicecandidate = null;
+                oldPc.ontrack = null;
+                oldPc.oniceconnectionstatechange = null;
+                oldPc.close();
+                delete peersRef.current[callerSocketId];
+                delete iceCandidateBufferRef.current[callerSocketId];
+            }
 
             const pc = createPeerConnection(callerSocketId);
             if (!pc) return;
