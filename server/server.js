@@ -70,12 +70,17 @@ app.get('/api/turn-credentials', async (req, res) => {
             const xirsys = data.v && data.v.iceServers;
             if (xirsys && xirsys.urls && xirsys.username && xirsys.credential) {
                 // Xirsys returns { username, urls: [...], credential }
-                // Convert each URL into a separate ICE server entry
-                const turnServers = xirsys.urls.map((url) => ({
-                    urls: url,
-                    username: xirsys.username,
-                    credential: xirsys.credential,
-                }));
+                // Convert each URL into a separate ICE server entry, omitting credentials for STUN
+                const turnServers = xirsys.urls.map((url) => {
+                    if (url.startsWith('stun:')) {
+                        return { urls: url };
+                    }
+                    return {
+                        urls: url,
+                        username: xirsys.username,
+                        credential: xirsys.credential,
+                    };
+                });
                 cachedIceServers = [...fallback, ...turnServers];
                 cacheExpiry = Date.now() + 5 * 60 * 1000; // 5 min cache
                 console.log(`Fetched ${turnServers.length} TURN servers from Xirsys`);

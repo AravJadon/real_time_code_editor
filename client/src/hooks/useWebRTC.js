@@ -8,36 +8,21 @@ const FALLBACK_ICE_SERVERS = [
     { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
-// Fetch TURN credentials from our server (with retry)
+// Fetch TURN credentials from our server
 async function fetchIceServers() {
-    for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 10000);
-
-            const response = await fetch(`${BACKEND_URL}/api/turn-credentials`, {
-                signal: controller.signal,
-            });
-            clearTimeout(timeout);
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data.iceServers && data.iceServers.length > 0) {
-                    const hasTurn = data.iceServers.some((s) =>
-                        typeof s.urls === 'string'
-                            ? s.urls.startsWith('turn')
-                            : Array.isArray(s.urls) && s.urls.some((u) => u.startsWith('turn'))
-                    );
-                    console.log(`Fetched ${data.iceServers.length} ICE servers, TURN available: ${hasTurn}`);
-                    return { iceServers: data.iceServers, hasTurn };
-                }
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/turn-credentials`);
+        if (response.ok) {
+            const data = await response.json();
+            if (data.iceServers && data.iceServers.length > 0) {
+                console.log(`Fetched ${data.iceServers.length} ICE servers from server`);
+                return data.iceServers;
             }
-        } catch (err) {
-            console.warn(`TURN fetch attempt ${attempt + 1} failed:`, err.message);
         }
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+    } catch (err) {
+        console.warn('Failed to fetch TURN credentials, using STUN fallback:', err.message);
     }
-    return { iceServers: FALLBACK_ICE_SERVERS, hasTurn: false };
+    return FALLBACK_ICE_SERVERS;
 }
 
 function getPreferredMediaStream() {
@@ -90,6 +75,7 @@ export const useWebRTC = (socket, roomId, username) => {
             pc.onicecandidate = null;
             pc.ontrack = null;
             pc.oniceconnectionstatechange = null;
+            pc.onnegotiationneeded = null;
             pc.close();
             delete peersRef.current[socketId];
         }
@@ -118,29 +104,47 @@ export const useWebRTC = (socket, roomId, username) => {
     }, [cleanupPeer]);
 
     // Create an RTCPeerConnection to a remote peer
-    const createPeerConnection = useCallback((remoteSocketId, remoteUsername) => {
+    const createPeerConnection = useCallback((remoteSocketId, remoteUsername, isInitiator = false) => {
         if (!remoteSocketId || remoteSocketId === socket?.id || !localStreamRef.current) {
             return null;
         }
 
-        // If we already have a connection, clean it up first to avoid stale connections
+        // Clean up any existing connection first to prevent conflicts
         if (peersRef.current[remoteSocketId]) {
             const existing = peersRef.current[remoteSocketId];
             existing.onicecandidate = null;
             existing.ontrack = null;
             existing.oniceconnectionstatechange = null;
+            existing.onnegotiationneeded = null;
             existing.close();
             delete peersRef.current[remoteSocketId];
             delete iceCandidateBufferRef.current[remoteSocketId];
         }
 
-        // Use the ICE config (includes iceTransportPolicy: 'relay' when TURN is available)
         const pc = new RTCPeerConnection(iceConfigRef.current);
 
-        // Add our local tracks to the connection
+        // Add local tracks to the connection
         localStreamRef.current.getTracks().forEach((track) => {
             pc.addTrack(track, localStreamRef.current);
         });
+
+        // Negotiation needed handler - browser handles generating/sending offers automatically
+        pc.onnegotiationneeded = async () => {
+            // Only the initiator starts the negotiation to prevent glare
+            if (!isInitiator) return;
+            try {
+                console.log(`Negotiating connection with ${remoteSocketId}...`);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                socket.emit(ACTIONS.VIDEO_CALL_OFFER, {
+                    signal: pc.localDescription,
+                    targetSocketId: remoteSocketId,
+                });
+            } catch (err) {
+                console.error('Error creating offer during negotiation:', err);
+            }
+        };
 
         // Handle ICE candidates — send them to the remote peer via the server
         pc.onicecandidate = (event) => {
@@ -170,6 +174,13 @@ export const useWebRTC = (socket, roomId, username) => {
             if (state === 'failed') {
                 console.warn(`ICE failed for ${remoteSocketId}, attempting ICE restart…`);
                 pc.restartIce();
+                // To avoid glare (both sides offering at the same time),
+                // the peer with the lexicographically smaller socket ID sends the restart offer
+                if (socket.id < remoteSocketId) {
+                    console.log(`Initiating glare-safe ICE restart offer to ${remoteSocketId}`);
+                    // Trigger renegotiation offer
+                    pc.onnegotiationneeded();
+                }
             }
         };
 
@@ -201,25 +212,6 @@ export const useWebRTC = (socket, roomId, username) => {
         iceCandidateBufferRef.current[socketId] = [];
     }, []);
 
-    // Create offer and send to a specific remote peer (we are the initiator)
-    const createOfferTo = useCallback(async (remoteSocketId, remoteUsername) => {
-        const pc = createPeerConnection(remoteSocketId, remoteUsername);
-        if (!pc) return;
-
-        try {
-            const offer = await pc.createOffer({ iceRestart: true });
-            await pc.setLocalDescription(offer);
-
-            socket.emit(ACTIONS.VIDEO_CALL_OFFER, {
-                signal: pc.localDescription,
-                targetSocketId: remoteSocketId,
-            });
-        } catch (err) {
-            console.error('Error creating offer:', err);
-            cleanupPeer(remoteSocketId);
-        }
-    }, [socket, createPeerConnection, cleanupPeer]);
-
     const startCall = useCallback(async () => {
         try {
             if (!socket?.connected) {
@@ -235,16 +227,12 @@ export const useWebRTC = (socket, roomId, username) => {
             }
 
             // Fetch fresh TURN credentials before starting the call
-            const { iceServers, hasTurn } = await fetchIceServers();
+            const iceServers = await fetchIceServers();
 
-            // BUILD THE ICE CONFIG
-            // If TURN servers are available, force relay mode for guaranteed connectivity
-            // This ensures the call works from ANY network globally
             iceConfigRef.current = {
                 iceServers,
-                iceTransportPolicy: hasTurn ? 'relay' : 'all',
+                iceTransportPolicy: 'all', // Use default 'all' policy for maximum compatibility
             };
-            console.log(`ICE transport policy: ${iceConfigRef.current.iceTransportPolicy}`);
 
             const stream = await getPreferredMediaStream();
             setLocalStream(stream);
@@ -306,8 +294,9 @@ export const useWebRTC = (socket, roomId, username) => {
 
         const handleCallParticipants = ({ participants = [] }) => {
             if (!localStreamRef.current) return;
+            // Initiate peer connections to all existing participants (we are the initiator)
             participants.forEach(({ socketId, username: peerUsername }) => {
-                createOfferTo(socketId, peerUsername);
+                createPeerConnection(socketId, peerUsername, true);
             });
         };
 
@@ -324,8 +313,8 @@ export const useWebRTC = (socket, roomId, username) => {
         const handleCallOffer = async ({ signal, callerSocketId }) => {
             if (!localStreamRef.current) return;
 
-            // createPeerConnection now always cleans up old connections first
-            const pc = createPeerConnection(callerSocketId);
+            // We are NOT the initiator of this connection
+            const pc = createPeerConnection(callerSocketId, null, false);
             if (!pc) return;
 
             try {
@@ -410,7 +399,7 @@ export const useWebRTC = (socket, roomId, username) => {
             socket.off(ACTIONS.DISCONNECTED, handleDisconnect);
             socket.off(ACTIONS.VIDEO_CALL_ROOM_INFO, handleCallRoomInfo);
         };
-    }, [socket, roomId, createPeerConnection, createOfferTo, cleanupPeer, flushIceCandidateBuffer]);
+    }, [socket, roomId, createPeerConnection, cleanupPeer, flushIceCandidateBuffer]);
 
     // Cleanup on unmount
     useEffect(() => {
