@@ -6,6 +6,7 @@ const VideoElement = ({ stream, isLocal }) => {
     useEffect(() => {
         if (videoRef.current && stream) {
             videoRef.current.srcObject = stream;
+            //<img src="abc.jpg"> yaha jesse src hota he video  ke liye srcObject  hoota  he 
             videoRef.current.play().catch(() => {});
         }
     }, [stream]);
@@ -15,13 +16,22 @@ const VideoElement = ({ stream, isLocal }) => {
             ref={videoRef}
             autoPlay
             playsInline
-            muted={isLocal}
+            muted={isLocal} //Mute your own video.
             className={`videoStream ${isLocal ? 'videoStream--local' : ''}`}
         />
     );
 };
 
 // SVG Icons
+// SVG stands for Scalable Vector Graphics.
+
+// Unlike PNG or JPG images, an SVG is not made of pixels. It is made using mathematical shapes like:
+
+// Lines
+// Circles
+// Rectangles
+// Curves
+// Polygons
 const MicIcon = () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
@@ -65,17 +75,18 @@ const EndCallIcon = () => (
 );
 
 const VideoCall = ({
-    localStream,
-    peerStreams,
-    peerUsernames,
-    isMuted,
-    isCameraOff,
-    callError,
-    onToggleMic,
-    onToggleCamera,
-    onEndCall,
-    currentUsername,
+    localStream,       // Your webcam/mic MediaStream
+    peerStreams,       // Object of peer streams: { [socketId]: stream }
+    peerUsernames,     // Object of peer usernames: { [socketId]: "Rahul" }
+    isMuted,           // Microphone muted state (boolean)
+    isCameraOff,       // Camera disabled state (boolean)
+    callError,         // Any WebRTC/permission error message string
+    onToggleMic,       // Parent callback to mute/unmute
+    onToggleCamera,    // Parent callback to turn camera on/off
+    onEndCall,         // Parent callback to end the call
+    currentUsername,   // Your own display name
 }) => {
+
     const panelRef = useRef(null);
     const [isDragging, setIsDragging] = useState(false);
     const [position, setPosition] = useState({ x: null, y: null });
@@ -88,7 +99,18 @@ const VideoCall = ({
         if (e.target.closest('.videoControls') || e.target.closest('.videoGrid')) return;
         e.preventDefault();
         const rect = panelRef.current.getBoundingClientRect();
+//         getBoundingClientRect() returns
+//         {
+//  left:100,
+//  top:50,
+//  width:300,
+//  height:200,
+//  right:400,
+//  bottom:250
+// }
+// It tells you exactly where the panel is on the screen.
         dragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        // We store this offset because when you move the mouse later, we want that same point under your cursor.
         setIsDragging(true);
     }, []);
 
@@ -104,7 +126,10 @@ const VideoCall = ({
         const handleMouseUp = () => {
             setIsDragging(false);
         };
-
+// document.addEventListener() is used because dragging is a global interaction,
+//  not something that should stop the instant the cursor leaves the panel. 
+//  By listening on the entire document, your drag remains smooth and reliable until the mouse button is released.
+// if we use div then we moves the pointer so fast that mouse leaeves the panel and stops moving the panel but document handle whole web page 
         document.addEventListener('mousemove', handleMouseMove);
         document.addEventListener('mouseup', handleMouseUp);
         return () => {

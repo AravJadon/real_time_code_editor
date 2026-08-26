@@ -61,6 +61,8 @@ function renderMarkdown(text) {
                 <div className="ai-code-block" key={key++}>
                     {lang && <span className="ai-code-lang">{lang}</span>}
                     <pre><code>{codeLines.join('\n')}</code></pre>
+                    {/* <pre> ka matlab Preformatted Text.
+                    Ye spaces aur newlines ko preserve karta hai. */}
                     <CopyButton text={codeLines.join('\n')} />
                 </div>
             );

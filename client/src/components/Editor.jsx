@@ -51,13 +51,14 @@ const Editor = ({ socket, roomId, activeFileId, initialCode, onCodeChange, langu
         );
 
         editorRef.current.setValue(initialCode || '');
+// Ye CodeMirror ka internal event handler hai.
 
         editorRef.current.on('change', (instance, changes) => {
             const { origin } = changes;
             const code = instance.getValue();
 
             onCodeChangeRef.current(code);
-
+// Only emit to server if change was typed by human (origin !== 'setValue' and not a remote update)
             if (origin !== 'setValue' && !isRemoteChange.current && socketRef.current && activeFileIdRef.current) {
                 socketRef.current.emit(ACTIONS.CODE_CHANGE, {
                     roomId,
@@ -204,7 +205,7 @@ const Editor = ({ socket, roomId, activeFileId, initialCode, onCodeChange, langu
         </div>
     );
 };
-
+//mainly syntax highlighting aur language-specific parsing
 function getModeFromLanguage(lang) {
     switch (lang) {
         case 'bash':
@@ -237,4 +238,100 @@ function getModeFromLanguage(lang) {
 
 export default Editor;
 
+// use State--
+// Component ke andar state (data) store karta hai.
+
+// Features
+// State remember karta hai.
+// Update hone par component re-render hota hai.
+
+// Why not normal variable?
+
+// let name = "";
+
+// Because normal variables re-render me reset ho jate hain. useState preserve karta hai.
+
+
+// useEffect
+// useEffect(() => {
+
+// }, []);
+// Purpose
+
+// Component render hone ke baad side effects chalata hai.
+
+// Side effects:
+
+// API call
+// Socket connection
+// Timer
+// Event listener
+// Runs
+// useEffect(() => {}, []);
+
+// ✅ Sirf first render par.
+
+// useEffect(() => {}, [roomId]);
+
+// ✅ First render + jab roomId change ho.
+
+// useEffect(() => {});
+
+// ✅ Har render par.
+
+// Cleanup
+// useEffect(() => {
+//     return () => {
+//         // cleanup
+//     };
+// }, []);
+
+// Unmount hone par execute hota hai.
+
+// Example
+
+// socket.disconnect();
+
+
+
+
+// 3. useRef
+// const editorRef = useRef(null);
+// Purpose
+
+// DOM element ya mutable value store karta hai.
+
+// Features
+// Value change hone par re-render nahi hota.
+// .current me value hoti hai.
+
+
+// useMemo -
+// caches a value (number, object, array, string — anything).
+//  Think of it as: "don't recalculate this unless these specific things changed."
+//  const memoizedValue = useMemo(() => computeExpensiveValue(a, b), [a, b]);
+
+
+// function makeFunction() {
+//     return () => console.log('hi');
+// }
+
+// const fn1 = makeFunction();
+// const fn2 = makeFunction();
+
+// console.log(fn1 === fn2); // false!
+
+// on re-render function reference sin memory changes everytime
+
+// so we have to make same refernce of a function until something was changes in fuction we uses useCallback();
+
+// const memoizedValue = useCallback(() => computeExpensiveValue(a, b), [a, b]);
+
+// By default, when a parent component re-renders, all its child components re-render too, even if their props didn't actually change. React gives us tools to prevent this unnecessary work.
+
+// React.memo wraps a component and skips re-rendering it if its props are the same as last time — it compares props using reference equality.
+
+// The catch is that non-primitive props — functions, objects, arrays — are recreated fresh on every render by default, so React.memo's comparison fails even when nothing meaningfully changed. useCallback and useMemo fix that: useCallback memoizes a function reference, useMemo memoizes a computed value or object, so they stay the same across renders as long as their dependencies don't change.
+
+// So in practice, React.memo and useCallback/useMemo work as a pair — React.memo does nothing useful unless the props it's checking are actually stable, and useCallback/useMemo don't help unless something downstream is actually checking reference equality, like React.memo or a useEffect dependency array."
 

@@ -3,6 +3,29 @@ import ACTIONS from '../Actions';
 import { BACKEND_URL } from '../config';
 
 // Fallback STUN-only config
+
+// --STUN - STUN Server (Session Traversal Utilities for NAT): Discovers your public IP address and port so peers can connect directly. Works 80% of the time.
+
+// --TURN - TURN Server (Traversal Using Relays around NAT): Relays media when direct connection fails (due to strict firewalls). Required for 100% connectivity.
+
+// If we use only STUN it will not work on those networks which has strict firewalls but if we use TURN it will work 100% 
+
+// what is relay server used for?? 
+// Relay server works as a middleman that forwards traffic between two peers when they cannot connect directly.
+// In WebRTC, if two peers are behind NATs (Network Address Translators) or firewalls that prevent direct peer-to-peer connections,
+// the relay server helps establish communication by relaying audio, video, and data between them.
+// This ensures that even in challenging network environments, participants can communicate effectively.
+
+// what is ice server ?? 
+// ICE (Interactive Connectivity Establishment) server is a server that helps two peers establish a direct connection with each other.
+// It works by collecting information about the network environment of both peers and then finding the best way to connect them.
+// It uses STUN and TURN servers to establish the connection.
+
+// What is NAT ?? 
+// NAT (Network Address Translation) is a technique used in computer networking to allow multiple devices on a private network to share a single public IP address. 
+// It works by modifying the network address information in the IP header of packets as they pass through the NAT device, typically a router or firewall.
+// This allows devices on a private network to access the internet using a single public IP address, while also providing a layer of security by hiding the internal network structure from the outside world. 
+
 const FALLBACK_ICE_SERVERS = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
@@ -131,6 +154,11 @@ export const useWebRTC = (socket, roomId, username) => {
         // Negotiation needed handler - browser handles generating/sending offers automatically
         pc.onnegotiationneeded = async () => {
             // Only the initiator starts the negotiation to prevent glare
+            // What is Glare ??
+            // Glare is a term used in WebRTC to describe the situation where both peers try to start a negotiation at the same time, 
+            // each thinking they are the initiator.
+            // This can happen when two peers join a call at the same time and both try to send an offer simultaneously.
+            // To prevent glare, we only allow the initiator to start the negotiation.
             if (!isInitiator) return;
             try {
                 console.log(`Negotiating connection with ${remoteSocketId}...`);
@@ -148,8 +176,14 @@ export const useWebRTC = (socket, roomId, username) => {
 
         // Handle ICE candidates — send them to the remote peer via the server
         pc.onicecandidate = (event) => {
+            // If an ICE candidate is found and the socket is connected
             if (event.candidate && socket?.connected) {
+                // Send the ICE candidate to the remote peer via the server
                 socket.emit(ACTIONS.ICE_CANDIDATE, {
+                    // event.candidate is the actual ICE candidate object the browser 
+                    // just discovered — containing technical details like the IP address,
+                    // port, and protocol for that particular path. This code just 
+                    // forwards that data to the other peer through the socket.
                     candidate: event.candidate,
                     targetSocketId: remoteSocketId,
                 });
@@ -158,7 +192,9 @@ export const useWebRTC = (socket, roomId, username) => {
 
         // Handle incoming remote tracks
         pc.ontrack = (event) => {
+            // Extract the remote stream from the event
             const [remoteStream] = event.streams;
+            // If a remote stream is received, update the state
             if (remoteStream) {
                 setPeerStreams((prev) => ({
                     ...prev,
@@ -167,14 +203,17 @@ export const useWebRTC = (socket, roomId, username) => {
             }
         };
 
+        // Handle ICE connection state changes
         pc.oniceconnectionstatechange = () => {
+            // Get the current ICE connection state
             const state = pc.iceConnectionState;
             console.log(`ICE [${remoteSocketId.slice(0, 8)}]: ${state}`);
 
+            // If ICE connection fails, attempt to restart it
             if (state === 'failed') {
                 console.warn(`ICE failed for ${remoteSocketId}, attempting ICE restart…`);
                 pc.restartIce();
-                // To avoid glare (both sides offering at the same time),
+                // To avoid glare (both sides offering at the same time),       
                 // the peer with the lexicographically smaller socket ID sends the restart offer
                 if (socket.id < remoteSocketId) {
                     console.log(`Initiating glare-safe ICE restart offer to ${remoteSocketId}`);
@@ -197,11 +236,13 @@ export const useWebRTC = (socket, roomId, username) => {
     }, [socket]);
 
     // Flush buffered ICE candidates once remote description is set
+    // if connecction is not established fully and the ICECandiadte arrives then save it and use it 
+    // when it is  esatblished
     const flushIceCandidateBuffer = useCallback(async (socketId) => {
         const pc = peersRef.current[socketId];
         const buffer = iceCandidateBufferRef.current[socketId];
         if (!pc || !buffer || buffer.length === 0) return;
-
+    
         for (const candidate of buffer) {
             try {
                 await pc.addIceCandidate(new RTCIceCandidate(candidate));

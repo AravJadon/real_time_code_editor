@@ -1,5 +1,10 @@
 import React from 'react';
-
+// Display one row of the file tree and handle user interaction for that row.
+// Show 📁
+// Show "src"
+// If clicked → expand/collapse
+// Show +📄
+// Show +📁
 const FileTreeItem = ({
     file,
     depth = 0,
@@ -26,6 +31,7 @@ const FileTreeItem = ({
             className={`fileTreeItem ${isActive ? 'fileTreeItem--active' : ''} ${
                 isFolder ? 'fileTreeItem--folder' : ''
             }`}
+            // as the depth grows we increase left padding 
             style={{ paddingLeft: `${depth * 16 + 10}px` }}
             onClick={() => {
                 if (isFolder) {
@@ -34,6 +40,7 @@ const FileTreeItem = ({
                     onSelect(file._id);
                 }
             }}
+            // onContextMenu is React event for right click 
             onContextMenu={handleContextMenu}
         >
             <span className="fileTreeItemIcon">
@@ -51,6 +58,8 @@ const FileTreeItem = ({
                         className="fileTreeItemActionBtn"
                         title="New File"
                         onClick={(e) => {
+  //Without stopPropagation(): 
+ // The child tells the parent, the parent tells the grandparent, and the message keeps traveling.
                             e.stopPropagation();
                             onCreateFile(file._id);
                         }}

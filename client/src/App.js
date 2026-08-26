@@ -1,10 +1,12 @@
 import './App.css';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { Toaster } from 'react-hot-toast';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';// routing 
+import { Toaster } from 'react-hot-toast';// toast notidfiscation
+// It provides a global container where react-hot-toast renders success, error, 
+// and other notifications triggered anywhere in the app.
 import Home from './Pages/Home';
 import EditorPage from './Pages/EditorPage';
 
-function App() {
+ function App() { //functional componennt
     return (
         <>
             <div>
@@ -36,10 +38,12 @@ function App() {
                 ></Toaster>
             </div>
             <BrowserRouter>
+{/* Q4. Why wrap the app in BrowserRouter?
+Components like Route, Link, useNavigate, and useParams need the routing context provided by BrowserRouter. */}
                 <Routes>
                     <Route path="/" element={<Home />}></Route>
                     <Route
-                        path="/editor/:roomId"
+                        path="/editor/:roomId" // A dynamic route parameter that captures values from the UR
                         element={<EditorPage />}
                     ></Route>
                 </Routes>
@@ -49,3 +53,11 @@ function App() {
 }
 
 export default App;
+
+// BrowserRouter uses the HTML5 History API to manage URLs and enables client-side navigation without reloading the page.
+// routes -Container for all routes.
+// route - maps URL to component
+
+
+
+

@@ -1,3 +1,8 @@
+//FileTree = Manager (handles the whole tree, recursion, context menu, rename state, etc.)
+//FileTreeItem = Worker (displays one file/folder row)
+
+
+
 import React, { useState, useMemo, useEffect } from 'react';
 import FileTreeItem from './FileTreeItem';
 
@@ -15,6 +20,7 @@ const FileTree = ({
     const [expandedFolders, setExpandedFolders] = useState({});
     const [contextMenu, setContextMenu] = useState(null);
     const [inlineEdit, setInlineEdit] = useState(null); // { id, name }
+    // inline editing ke liye 
 
     useEffect(() => {
         const handleClickOutside = () => closeContextMenu();
@@ -41,7 +47,7 @@ const FileTree = ({
         setContextMenu(null);
     };
 
-    const handleRenameSubmit = (id, newName) => {
+    const handleRenameSubmit = (id, newName) => {  
         if (newName.trim() !== '') {
             onRename(id, newName.trim());
         }
@@ -49,6 +55,7 @@ const FileTree = ({
     };
 
     // Organize files into a tree
+    // Give me all children of this parent.
     const fileTree = useMemo(() => {
         const buildTree = (parentId) => {
             // Normalize parentId for comparison: null/undefined/'' all mean "root"
@@ -69,7 +76,10 @@ const FileTree = ({
         };
         return buildTree(null);
     }, [files]);
-
+// Clicking Rename does not start a special search.
+//  Clicking Rename updates inlineEdit, which causes React to re-render the tree recursively.
+//   During that re-render, every node checks whether its _id matches inlineEdit.id.
+//    The matching node renders an <input> instead of a FileTreeItem.
     const renderTree = (nodes, depth = 0) => {
         return nodes.map((node) => (
             <React.Fragment key={node._id}>
@@ -94,6 +104,8 @@ const FileTree = ({
                                 }
                                 if (e.key === 'Escape') setInlineEdit(null);
                             }}
+                            // onBlur function is used to handle the blur event of the input element.
+                            // It runs when an input loses focus.
                             onBlur={() => handleRenameSubmit(node._id, inlineEdit.name)}
                         />
                     </div>
