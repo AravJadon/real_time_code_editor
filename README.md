@@ -7,7 +7,6 @@ A full-stack, real-time collaborative coding platform designed for seamless remo
 [![Socket.IO](https://img.shields.io/badge/Socket.IO-4.8-010101?logo=socket.io&logoColor=white)](https://socket.io/)
 [![WebRTC](https://img.shields.io/badge/WebRTC-Peer2Peer-FF5722?logo=webrtc&logoColor=white)](https://webrtc.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
@@ -134,9 +133,3 @@ This repository includes a `render.yaml` blueprint:
    npm run build
    npm start
    ```
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
