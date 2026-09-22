@@ -43,7 +43,7 @@ Components like Route, Link, useNavigate, and useParams need the routing context
                 <Routes>
                     <Route path="/" element={<Home />}></Route>
                     <Route
-                        path="/editor/:roomId" // A dynamic route parameter that captures values from the UR
+                        path="/editor/:roomId" // A dynamic route parameter that captures values from the URL
                         element={<EditorPage />}
                     ></Route>
                 </Routes>
