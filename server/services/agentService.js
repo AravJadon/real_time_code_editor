@@ -3,7 +3,8 @@ const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const { ToolMessage } = require('@langchain/core/messages');
 const fileService = require('./fileService');
 const { runCode } = require('./judge0Service');
-const { searchSimilar } = require('./vectorStoreService');
+const { searchSimilar, indexFile } = require('./vectorStoreService');
+const { extractText, friendlyError, availableModels, noteModelFailure } = require('./aiService');
 
 // ─── Tool Definitions ───
 
@@ -96,7 +97,20 @@ const AGENT_TOOLS = [
 
 // ─── Tool Execution ───
 
+/**
+ * A tool that throws must come back as a message the model can read and react to.
+ * Letting it propagate aborts the whole agent run and returns a 502 instead.
+ */
 async function executeTool(toolName, args, context) {
+    try {
+        return await runTool(toolName, args, context);
+    } catch (error) {
+        console.warn(`Agent tool ${toolName} failed:`, error.message);
+        return `❌ Tool "${toolName}" failed: ${error.message}`;
+    }
+}
+
+async function runTool(toolName, args, context) {
     switch (toolName) {
         case 'searchCode': {
             const results = await searchSimilar(context.roomId, args.query, 5);
@@ -126,6 +140,18 @@ async function executeTool(toolName, args, context) {
             // Emit socket event so all room members see the new file
             if (context.io && context.roomId) {
                 context.io.in(context.roomId).emit('file_create', { file: newFile });
+            }
+
+            // Make the new file retrievable straight away, otherwise the agent
+            // cannot find code it just wrote in a later step of the same task.
+            if (newFile.code) {
+                indexFile(
+                    context.roomId,
+                    String(newFile._id),
+                    newFile.name,
+                    newFile.code,
+                    newFile.language
+                ).catch((err) => console.warn('Agent file index failed:', err.message));
             }
 
             return `✅ Created file "${args.fileName}" successfully.`;
@@ -166,33 +192,63 @@ async function runAgent(options) {
         throw new Error('AI API key is not configured.');
     }
 
-    const modelName = (process.env.AI_MODELS || process.env.AI_MODEL || 'gemini-2.5-flash').split(',')[0].trim();
-    const model = new ChatGoogleGenerativeAI({
-        model: modelName,
+    // Shares the chain and the rate-limit cooldown with the chat path, so a model
+    // known to be quota-blocked is not retried here either.
+    const modelChain = availableModels();
+
+    const buildModel = (name) => new ChatGoogleGenerativeAI({
+        model: name,
         apiKey: process.env.API_KEY,
         temperature: 0.4,
         maxOutputTokens: 2048,
     });
 
-    const boundModel = model.bindTools(AGENT_TOOLS);
+    // The agent had no fallback either, so it inherited the same single-model
+    // failure mode as chat: one 429 and the run dies.
+    let modelName = modelChain[0];
+    let model = buildModel(modelName);
+    let boundModel = model.bindTools(AGENT_TOOLS);
 
     const messages = [
         new SystemMessage(AGENT_SYSTEM_PROMPT),
         new HumanMessage(options.prompt),
     ];
 
+    const invokeWithFallback = async (target, payload) => {
+        let lastError = null;
+
+        for (let i = modelChain.indexOf(modelName); i < modelChain.length; i++) {
+            try {
+                return await (target === 'bound' ? boundModel : model).invoke(payload);
+            } catch (error) {
+                lastError = error;
+                noteModelFailure(modelName, error);
+                console.error(`Agent model ${modelName} failed:`, error.message);
+
+                const next = modelChain[i + 1];
+                if (!next) break;
+
+                modelName = next;
+                model = buildModel(modelName);
+                boundModel = model.bindTools(AGENT_TOOLS);
+            }
+        }
+
+        const failure = new Error(friendlyError(lastError));
+        failure.statusCode = 502;
+        throw failure;
+    };
+
     const toolCallLog = [];
     let finalResponse = '';
 
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
-        const response = await boundModel.invoke(messages);
+        const response = await invokeWithFallback('bound', messages);
         messages.push(response);
 
         // If no tool calls, we're done
         if (!response.tool_calls || response.tool_calls.length === 0) {
-            finalResponse = typeof response.content === 'string'
-                ? response.content
-                : JSON.stringify(response.content);
+            finalResponse = extractText(response.content);
             break;
         }
 
@@ -216,15 +272,15 @@ async function runAgent(options) {
         }
     }
 
-    // If we ran out of iterations, get a final summary
+    // If we ran out of iterations, get a final summary. This has to go through the
+    // tool-bound model: the history contains function calls and responses, and
+    // Gemini rejects those when no matching tool declarations are attached.
     if (!finalResponse) {
-        const summary = await model.invoke([
+        const summary = await invokeWithFallback('bound', [
             ...messages,
-            new HumanMessage('Summarize what you accomplished and any remaining work.'),
+            new HumanMessage('Summarize what you accomplished and any remaining work. Do not call any more tools.'),
         ]);
-        finalResponse = typeof summary.content === 'string'
-            ? summary.content
-            : JSON.stringify(summary.content);
+        finalResponse = extractText(summary.content) || 'The agent reached its step limit before producing a summary.';
     }
 
     return {

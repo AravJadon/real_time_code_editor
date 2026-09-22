@@ -7,7 +7,11 @@
     "dev": "nodemon server.js",
     "server:dev": "nodemon server.js",
     "test:rag": "node tests/rag.smoke.js",
-    "server:prod": "node server.js"
+    "server:prod": "node server.js",
+    "test:applyfix": "node tests/applyfix.smoke.js",
+    "test:sse": "node tests/sse.smoke.js",
+    "test": "node tests/rag.smoke.js && node tests/applyfix.smoke.js && node tests/sse.smoke.js && node tests/fallback.smoke.js",
+    "test:fallback": "node tests/fallback.smoke.js"
   },
   "dependencies": {
     "@langchain/core": "^1.2.12",

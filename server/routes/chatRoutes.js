@@ -1,21 +1,12 @@
 const express = require('express');
-const { isDBConnected } = require('../db');
-const ChatHistory = require('../models/ChatHistory');
+const chatHistoryService = require('../services/chatHistoryService');
 
 const router = express.Router();
 
 // ─── GET /api/chat/:roomId — Load chat history ───
 router.get('/chat/:roomId', async (req, res) => {
     try {
-        if (!isDBConnected()) {
-            return res.json({ messages: [] });
-        }
-
-        const messages = await ChatHistory.find({ roomId: req.params.roomId })
-            .sort({ createdAt: 1 })
-            .limit(100)
-            .lean();
-
+        const messages = await chatHistoryService.getMessages(req.params.roomId);
         return res.json({ messages });
     } catch (error) {
         console.error('Failed to load chat history:', error);
@@ -26,10 +17,7 @@ router.get('/chat/:roomId', async (req, res) => {
 // ─── DELETE /api/chat/:roomId — Clear chat history ───
 router.delete('/chat/:roomId', async (req, res) => {
     try {
-        if (isDBConnected()) {
-            await ChatHistory.deleteMany({ roomId: req.params.roomId });
-        }
-
+        await chatHistoryService.clearMessages(req.params.roomId);
         return res.json({ success: true });
     } catch (error) {
         console.error('Failed to clear chat history:', error);

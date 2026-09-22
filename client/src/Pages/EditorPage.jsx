@@ -15,6 +15,7 @@ import AIAssistant from '../components/AIAssistant';
 import { BACKEND_URL } from '../config';
 import { DEFAULT_LANGUAGE, LANGUAGE_OPTIONS, getLanguageLabel } from '../languages';
 import { initSocket } from '../socket';
+import { mergeFix, findFixTarget } from '../utils/applyFix';
 import { useWebRTC } from '../hooks/useWebRTC';
 
 /* ─── SVG Icons ─── */
@@ -477,28 +478,57 @@ const EditorPage = () => {
         });
     }, []);
 
-    // Phase 6: Apply code from AI fix
-    const handleApplyCode = useCallback((newCode, fixFileName) => {
-        if (!newCode) return;
-        // If the fix is for the active file or no specific file, apply directly
-        if (!fixFileName || (activeFile && activeFile.name === fixFileName)) {
-            codeRef.current = newCode;
-            // Trigger a code change event to update the editor and broadcast
-            if (socketClient && activeFileId) {
-                socketClient.emit(ACTIONS.CODE_CHANGE, {
-                    roomId,
-                    fileId: activeFileId,
-                    code: newCode,
-                });
-            }
-            // Force editor to re-render by updating the file in state
-            setFiles((prev) =>
-                prev.map((f) =>
-                    f._id === activeFileId ? { ...f, code: newCode } : f
-                )
-            );
+    // Phase 6: Apply code from AI fix.
+    //
+    // `newCode` is a *snippet* — the replacement for `oldCode`, not the whole file.
+    // Writing it over the entire buffer (what this used to do) deleted everything
+    // else in the file whenever the model returned a one-line fix.
+    const handleApplyCode = useCallback((fix) => {
+        if (!fix || !fix.newCode) return;
+
+        const target = findFixTarget(files, fix.fileName, activeFile);
+
+        if (!target) {
+            toast.error(`Could not find "${fix.fileName}" in this room.`);
+            return;
         }
-    }, [activeFile, activeFileId, socketClient, roomId]);
+
+        const current = target._id === activeFileId ? codeRef.current : target.code || '';
+        const result = mergeFix(current, fix);
+
+        if (!result.ok) {
+            if (result.reason === 'already-applied') {
+                toast('That fix is already applied.');
+            } else if (result.reason === 'anchor-not-found') {
+                toast.error('Could not locate the original snippet — the file may have changed.');
+            }
+            return;
+        }
+
+        const updated = result.code;
+
+        if (target._id === activeFileId) {
+            codeRef.current = updated;
+        }
+
+        if (socketClient) {
+            socketClient.emit(ACTIONS.CODE_CHANGE, {
+                roomId,
+                fileId: target._id,
+                code: updated,
+            });
+        }
+
+        setFiles((prev) =>
+            prev.map((f) => (f._id === target._id ? { ...f, code: updated } : f))
+        );
+
+        toast.success(
+            target._id === activeFileId
+                ? 'Fix applied.'
+                : `Fix applied to ${target.name}.`
+        );
+    }, [files, activeFile, activeFileId, socketClient, roomId]);
 
     if (!location.state) {
         return <Navigate to="/" />;

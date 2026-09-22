@@ -64,8 +64,14 @@ function registerSocketHandlers(io) {
                 // Index immediately if the new file already has content, so it is
                 // retrievable without waiting for someone to edit it.
                 if (file.type === 'file' && file.code) {
+                    // Resolve the nested path so the embedding carries
+                    // "components/Editor.jsx", not a bare "Editor.jsx".
+                    const roomFiles = await fileService.findFilesByRoom(roomId);
+                    const { buildPathMap } = require('../services/projectContextService');
+                    const filePath = buildPathMap(roomFiles).get(toFileId(file._id));
+
                     vectorStore
-                        .indexFile(roomId, toFileId(file._id), file.name, file.code, file.language)
+                        .indexFile(roomId, toFileId(file._id), file.name, file.code, file.language, { filePath })
                         .catch(() => {});
                 }
             } catch (error) {
@@ -81,8 +87,12 @@ function registerSocketHandlers(io) {
                 // The file name is part of what gets embedded, so a rename makes
                 // the stored vectors stale — force a rebuild.
                 if (file && file.type === 'file' && file.code) {
+                    const roomFiles = await fileService.findFilesByRoom(roomId);
+                    const { buildPathMap } = require('../services/projectContextService');
+                    const filePath = buildPathMap(roomFiles).get(toFileId(file._id));
+
                     vectorStore
-                        .indexFile(roomId, toFileId(file._id), name, file.code, file.language, { force: true })
+                        .indexFile(roomId, toFileId(file._id), name, file.code, file.language, { force: true, filePath })
                         .catch(() => {});
                 }
             } catch (error) {

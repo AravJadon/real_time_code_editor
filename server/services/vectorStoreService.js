@@ -15,6 +15,9 @@ const memoryStore = new Map(); // roomId -> [{ fileId, fileName, ..., embedding 
 const indexTimers = new Map();
 const INDEX_DEBOUNCE_MS = 3000;
 
+// ─── De-dupe concurrent indexing of the same file content ───
+const inFlightIndexing = new Map(); // "roomId:fileId:hash" -> Promise
+
 // ─── Retrieval tuning ───
 // Lexical matching catches what embeddings miss: exact identifiers, file names,
 // and rare tokens. Vector search stays the primary signal.
@@ -144,6 +147,25 @@ async function indexFile(roomId, fileId, fileName, code, language, options = {})
         return;
     }
 
+    // Two users joining at once both pass the check above before either has
+    // written anything, so the whole room gets embedded twice — double the API
+    // cost against a rate limit that is already the binding constraint.
+    const inFlightKey = `${roomId}:${fileId}:${contentHash}`;
+    if (inFlightIndexing.has(inFlightKey)) {
+        return inFlightIndexing.get(inFlightKey);
+    }
+
+    const work = indexFileUncoordinated(roomId, fileId, fileName, code, language, options, contentHash);
+    inFlightIndexing.set(inFlightKey, work);
+
+    try {
+        return await work;
+    } finally {
+        inFlightIndexing.delete(inFlightKey);
+    }
+}
+
+async function indexFileUncoordinated(roomId, fileId, fileName, code, language, options, contentHash) {
     const chunks = chunkCode(code);
     if (chunks.length === 0) return;
 
@@ -158,7 +180,12 @@ async function indexFile(roomId, fileId, fileName, code, language, options = {})
     try {
         vectors = await embedDocuments(embeddingInputs);
     } catch (error) {
-        console.warn(`Embedding failed for ${fileName}:`, error.message);
+        // A misconfigured or retired embedding model fails here for every single
+        // file, leaving the store empty while the app looks healthy. Say so loudly
+        // — this exact failure made RAG look "implemented but useless".
+        console.error(
+            `[RAG] ❌ Embedding failed for ${fileName} — retrieval will be empty. ${error.message}`
+        );
         return;
     }
 
@@ -334,6 +361,16 @@ async function searchSimilar(roomId, query, topK = 8, options = {}) {
     if (!docs || docs.length === 0) return [];
 
     const terms = tokenize(query);
+
+    // Vectors written by a different embedding model have a different width, and
+    // cosineSimilarity quietly scores those 0 — retrieval degrades to lexical-only
+    // with no explanation. Flag it so the fix (re-index the room) is obvious.
+    if (queryVector && docs[0].embedding && docs[0].embedding.length !== queryVector.length) {
+        console.warn(
+            `[RAG] ⚠️ Stored embeddings are ${docs[0].embedding.length}-dim but queries are ${queryVector.length}-dim. ` +
+            'The embedding model changed — delete the CodeEmbedding collection and rejoin the room to re-index.'
+        );
+    }
 
     let results = docs.map((doc) => {
         const vectorScore = queryVector ? cosineSimilarity(queryVector, doc.embedding) : 0;

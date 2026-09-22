@@ -1,5 +1,6 @@
 const express = require('express');
 const { askAI, askAIStream } = require('../services/aiService');
+const chatHistoryService = require('../services/chatHistoryService');
 
 const router = express.Router();
 
@@ -17,32 +18,21 @@ router.post('/ai', async (req, res) => {
             imageBase64: req.body.imageBase64,
         });
 
-        // Phase 5: Save chat history
-        try {
-            const ChatHistory = require('../models/ChatHistory');
-            const { isDBConnected } = require('../db');
-
-            if (isDBConnected() && req.body.roomId) {
-                await ChatHistory.create([
-                    {
-                        roomId: req.body.roomId,
-                        role: 'user',
-                        content: req.body.prompt || req.body.code || '[image]',
-                        action: req.body.action || 'chat',
-                    },
-                    {
-                        roomId: req.body.roomId,
-                        role: 'assistant',
-                        content: result.response,
-                        action: result.action,
-                        model: result.model,
-                        fixes: result.fixes || [],
-                    },
-                ]);
-            }
-        } catch (historyError) {
-            console.warn('Failed to save chat history:', historyError.message);
-        }
+        // Phase 5: Save chat history (falls back to memory when Mongo is down)
+        await chatHistoryService.appendMessages(req.body.roomId, [
+            {
+                role: 'user',
+                content: req.body.prompt || req.body.code || '[image]',
+                action: req.body.action || 'chat',
+            },
+            {
+                role: 'assistant',
+                content: result.response,
+                action: result.action,
+                model: result.model,
+                fixes: result.fixes || [],
+            },
+        ]);
 
         return res.json(result);
     } catch (error) {
@@ -61,6 +51,7 @@ router.post('/ai/stream', async (req, res) => {
     res.setHeader('X-Accel-Buffering', 'no');
 
     let fullResponse = '';
+    let streamModel = null;
 
     try {
         const stream = askAIStream({
@@ -79,33 +70,26 @@ router.post('/ai/stream', async (req, res) => {
                 fullResponse += chunk.content;
                 res.write(`data: ${JSON.stringify(chunk)}\n\n`);
             } else if (chunk.type === 'done') {
+                streamModel = chunk.model || null;
                 res.write(`data: ${JSON.stringify({ type: 'done', model: chunk.model, ragSources: chunk.ragSources || [] })}\n\n`);
             }
         }
 
         // Phase 5: Save streamed chat history
-        try {
-            const ChatHistory = require('../models/ChatHistory');
-            const { isDBConnected } = require('../db');
-
-            if (isDBConnected() && req.body.roomId && fullResponse) {
-                await ChatHistory.create([
-                    {
-                        roomId: req.body.roomId,
-                        role: 'user',
-                        content: req.body.prompt || req.body.code || '[image]',
-                        action: req.body.action || 'chat',
-                    },
-                    {
-                        roomId: req.body.roomId,
-                        role: 'assistant',
-                        content: fullResponse,
-                        action: req.body.action || 'chat',
-                    },
-                ]);
-            }
-        } catch (historyError) {
-            console.warn('Failed to save streamed chat history:', historyError.message);
+        if (fullResponse) {
+            await chatHistoryService.appendMessages(req.body.roomId, [
+                {
+                    role: 'user',
+                    content: req.body.prompt || req.body.code || '[image]',
+                    action: req.body.action || 'chat',
+                },
+                {
+                    role: 'assistant',
+                    content: fullResponse,
+                    action: req.body.action || 'chat',
+                    model: streamModel,
+                },
+            ]);
         }
 
         res.write('data: [DONE]\n\n');

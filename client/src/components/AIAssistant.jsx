@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createSSEParser } from '../utils/sse';
 
 /* ─── SVG Icons ─── */
 const SparkleIcon = () => (
@@ -191,6 +192,11 @@ function CopyButton({ text }) {
 
 /* ─── Quick Action Cards ─── */
 
+// Actions whose whole point is the one-click "Apply Fix" button. Those fixes come
+// back as function calls, and only the non-streaming endpoint binds tools — routing
+// them through the stream meant the buttons never rendered at all.
+const NON_STREAMABLE_ACTIONS = ['suggest', 'bugfix', 'review'];
+
 const QUICK_ACTIONS = [
     { id: 'suggest', icon: '🔮', label: 'Suggest', desc: 'AI code completion' },
     { id: 'explain', icon: '📖', label: 'Explain', desc: 'Understand this code' },
@@ -252,6 +258,16 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
 
         loadHistory();
     }, [roomId, backendUrl]);
+
+    // Declared before the request handlers that call it, so it can be listed as a
+    // dependency rather than captured implicitly (which failed the CI build).
+    const clearImage = useCallback(() => {
+        setImagePreview(null);
+        setImageBase64(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    }, []);
 
     // ─── Standard (non-streaming) AI request ───
     const sendStandardRequest = useCallback(async (action, customPrompt) => {
@@ -327,7 +343,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
             setIsLoading(false);
             clearImage();
         }
-    }, [code, language, fileName, backendUrl, messages, roomId, imageBase64]);
+    }, [code, language, fileName, backendUrl, messages, roomId, imageBase64, clearImage]);
 
     // ─── Phase 2: Streaming AI request ───
     const sendStreamingRequest = useCallback(async (action, customPrompt) => {
@@ -382,47 +398,49 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
                 body: JSON.stringify(body),
             });
 
+            if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
+                const errBody = await response.json().catch(() => ({}));
+                throw new Error(errBody.error || `Request failed (${response.status})`);
+            }
+
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullContent = '';
             let modelName = '';
             let ragSources = [];
+            let streamError = null;
+
+            // Buffers across network chunk boundaries — see utils/sse.js.
+            const parser = createSSEParser((parsed) => {
+                if (parsed.type === 'token') {
+                    fullContent += parsed.content;
+                    setMessages((prev) =>
+                        prev.map((m) =>
+                            m.id === aiMessageId
+                                ? { ...m, content: fullContent, rawContent: fullContent }
+                                : m
+                        )
+                    );
+                } else if (parsed.type === 'done') {
+                    modelName = parsed.model || '';
+                    ragSources = parsed.ragSources || [];
+                } else if (parsed.type === 'error') {
+                    streamError = parsed.error || 'The AI request failed.';
+                }
+            });
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const text = decoder.decode(value, { stream: true });
-                const lines = text.split('\n');
+                parser.push(decoder.decode(value, { stream: true }));
+            }
 
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') continue;
+            parser.push(decoder.decode());
+            parser.flush();
 
-                    try {
-                        const parsed = JSON.parse(data);
-                        if (parsed.type === 'token') {
-                            fullContent += parsed.content;
-                            setMessages((prev) =>
-                                prev.map((m) =>
-                                    m.id === aiMessageId
-                                        ? { ...m, content: fullContent, rawContent: fullContent }
-                                        : m
-                                )
-                            );
-                        } else if (parsed.type === 'done') {
-                            modelName = parsed.model || '';
-                            ragSources = parsed.ragSources || [];
-                        } else if (parsed.type === 'error') {
-                            throw new Error(parsed.error);
-                        }
-                    } catch (parseErr) {
-                        if (parseErr.message && !parseErr.message.includes('JSON')) {
-                            throw parseErr;
-                        }
-                    }
-                }
+            if (streamError) {
+                throw new Error(streamError);
             }
 
             // Finalize the streaming message
@@ -435,7 +453,12 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
             );
         } catch (error) {
             setMessages((prev) => [
-                ...prev.filter((m) => m.id !== aiMessageId || m.content),
+                // Drop the placeholder if nothing arrived; otherwise keep the partial
+                // answer but clear the streaming flag so the badge and the typing
+                // indicator do not stay on screen forever.
+                ...prev
+                    .filter((m) => m.id !== aiMessageId || m.content)
+                    .map((m) => (m.id === aiMessageId ? { ...m, isStreaming: false } : m)),
                 {
                     id: Date.now() + 2,
                     role: 'error',
@@ -447,7 +470,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
             setIsLoading(false);
             clearImage();
         }
-    }, [code, language, fileName, backendUrl, messages, roomId, imageBase64]);
+    }, [code, language, fileName, backendUrl, messages, roomId, imageBase64, clearImage]);
 
     // ─── Phase 7: Agent mode request ───
     const sendAgentRequest = useCallback(async (customPrompt) => {
@@ -526,7 +549,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
             return sendAgentRequest(customPrompt);
         }
 
-        if (useStreaming && action !== 'suggest') {
+        if (useStreaming && !NON_STREAMABLE_ACTIONS.includes(action)) {
             return sendStreamingRequest(action, customPrompt);
         }
 
@@ -592,18 +615,12 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
         reader.readAsDataURL(file);
     }, []);
 
-    const clearImage = useCallback(() => {
-        setImagePreview(null);
-        setImageBase64(null);
-        if (fileInputRef.current) {
-            fileInputRef.current.value = '';
-        }
-    }, []);
-
     // ─── Phase 6: Apply fix handler ───
+    // Hand over the whole fix: the editor needs `oldCode` as an anchor so it can
+    // splice the snippet in instead of overwriting the entire file with it.
     const handleApplyFix = useCallback((fix) => {
-        if (onApplyCode && fix.newCode) {
-            onApplyCode(fix.newCode, fix.fileName);
+        if (onApplyCode && fix && fix.newCode) {
+            onApplyCode(fix);
         }
     }, [onApplyCode]);
 

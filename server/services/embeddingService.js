@@ -2,7 +2,16 @@ const { GoogleGenerativeAIEmbeddings } = require('@langchain/google-genai');
 const crypto = require('crypto');
 
 // ─── Configuration ───
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-004';
+// `text-embedding-004` was retired and now 404s, which silently emptied the whole
+// vector store: every indexFile call failed, every search returned nothing.
+const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'gemini-embedding-001';
+
+// gemini-embedding-001 returns 3072 dims by default. Truncating to 768 (the model
+// is Matryoshka-trained, so a prefix is still a valid embedding) cuts vector storage
+// 4x with no meaningful retrieval loss. Truncated vectors are not unit-norm, which
+// is fine — cosineSimilarity normalises.
+const EMBEDDING_DIMENSIONS = Number(process.env.EMBEDDING_DIMENSIONS) || 768;
+
 const EMBED_BATCH_SIZE = 40;
 const EMBED_MAX_RETRIES = 3;
 const EMBED_RETRY_BASE_MS = 600;
@@ -30,6 +39,7 @@ function getEmbeddingsModel(taskType) {
     const model = new GoogleGenerativeAIEmbeddings({
         apiKey: process.env.API_KEY,
         model: EMBEDDING_MODEL,
+        outputDimensionality: EMBEDDING_DIMENSIONS,
         ...(taskTypeSupported ? { taskType } : {}),
     });
 
@@ -186,10 +196,15 @@ function chunkCode(code, options = {}) {
             chunks.push({ text, startLine, endLine });
         }
 
-        if (carryOverlap && overlapLines > 0) {
-            const carried = currentLines.slice(-overlapLines);
+        // Carrying overlap only helps when the carried lines are small. A minified
+        // file is one enormous line: carrying it forward re-emits the same blob in
+        // every chunk and blows past the embedding request size limit.
+        const carried = carryOverlap && overlapLines > 0 ? currentLines.slice(-overlapLines) : [];
+        const carriedSize = carried.reduce((sum, line) => sum + line.length + 1, 0);
+
+        if (carried.length > 0 && carriedSize < maxChunkSize) {
             currentLines = carried;
-            currentSize = carried.reduce((sum, line) => sum + line.length + 1, 0);
+            currentSize = carriedSize;
             startLine = Math.max(1, endLine - carried.length + 1);
         } else {
             currentLines = [];
