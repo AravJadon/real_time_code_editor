@@ -1,12 +1,13 @@
-const https = require('https');
+const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const { HumanMessage, SystemMessage, AIMessage } = require('@langchain/core/messages');
 
-const AI_MODELS = (process.env.AI_MODELS || process.env.AI_MODEL || 'gemini-2.5-flash,gemini-3.5-flash')
+// ─── Configuration ───
+const AI_MODELS = (process.env.AI_MODELS || process.env.AI_MODEL || 'gemini-2.5-flash,gemini-2.0-flash')
     .split(',')
-    .map((model) => model.trim())
+    .map((m) => m.trim())
     .filter(Boolean);
-const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 120000);
-const MAX_RETRIES = Number(process.env.AI_MAX_RETRIES || 2);
-const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+
+const VALID_ACTIONS = ['suggest', 'explain', 'review', 'bugfix', 'chat'];
 
 const AI_SYSTEM_PROMPTS = {
     suggest:
@@ -18,39 +19,85 @@ const AI_SYSTEM_PROMPTS = {
     bugfix:
         'You are an expert debugger. Find bugs, explain why they are problems, and provide corrected code. If no bugs are found, mention that and suggest preventive improvements.',
     chat:
-        'You are an expert AI coding assistant embedded in SyncCode. Help developers write better code. Be concise, helpful, and format responses in markdown.',
+        'You are an expert AI coding assistant embedded in SyncCode, a real-time collaborative code editor. Help developers write better code. Be concise, helpful, and format responses in markdown.',
 };
 
-const VALID_ACTIONS = ['suggest', 'explain', 'review', 'bugfix', 'chat'];
+// ─── Function calling schema for Apply Fix (Phase 6) ───
+const APPLY_FIX_TOOL = {
+    type: 'function',
+    function: {
+        name: 'apply_code_fix',
+        description: 'Propose a concrete code fix that the user can apply with one click. Use this when you find a bug or have a specific code improvement. You can call this multiple times for multiple fixes.',
+        parameters: {
+            type: 'object',
+            properties: {
+                fileName: {
+                    type: 'string',
+                    description: 'The name of the file to apply the fix to',
+                },
+                description: {
+                    type: 'string',
+                    description: 'Short description of what this fix does',
+                },
+                oldCode: {
+                    type: 'string',
+                    description: 'The original code snippet that should be replaced (exact match)',
+                },
+                newCode: {
+                    type: 'string',
+                    description: 'The corrected/improved code to replace the old code with',
+                },
+            },
+            required: ['fileName', 'description', 'oldCode', 'newCode'],
+        },
+    },
+};
 
-function wait(ms) {
-    return new Promise((resolve) => {
-        setTimeout(resolve, ms);
+// ─── Model Factory ───
+function createModel(modelName, options = {}) {
+    return new ChatGoogleGenerativeAI({
+        model: modelName,
+        apiKey: process.env.API_KEY,
+        temperature: options.temperature ?? 0.7,
+        maxOutputTokens: options.maxTokens ?? 1024,
+        streaming: options.streaming ?? false,
     });
 }
 
+// ─── Trim helper ───
 function trimText(value, maxLength) {
     if (typeof value !== 'string') return '';
     if (value.length <= maxLength) return value;
     return value.slice(value.length - maxLength);
 }
 
-function buildAIMessages(action, code, language, prompt, conversationHistory) {
+// ─── Build LangChain messages ───
+function buildMessages(action, code, language, prompt, conversationHistory, ragContext, imageBase64) {
     const systemPrompt = AI_SYSTEM_PROMPTS[action] || AI_SYSTEM_PROMPTS.chat;
-    const messages = [{ role: 'system', content: systemPrompt }];
+    const messages = [new SystemMessage(systemPrompt)];
 
+    // Add conversation history for chat mode
     if (action === 'chat' && Array.isArray(conversationHistory)) {
-        conversationHistory.slice(-8).forEach((message) => {
-            if (message.role === 'user' || message.role === 'assistant') {
-                messages.push({
-                    role: message.role,
-                    content: trimText(message.content, 2000),
-                });
+        conversationHistory.slice(-8).forEach((msg) => {
+            if (msg.role === 'user') {
+                messages.push(new HumanMessage(trimText(msg.content, 2000)));
+            } else if (msg.role === 'assistant') {
+                messages.push(new AIMessage(trimText(msg.content, 2000)));
             }
         });
     }
 
+    // Build user content
     let userContent = '';
+
+    // Add RAG context if available (Phase 4)
+    if (ragContext && ragContext.length > 0) {
+        userContent += '### Relevant code from other files in this project:\n\n';
+        ragContext.forEach((chunk) => {
+            userContent += `**${chunk.fileName}:**\n\`\`\`${chunk.language || ''}\n${chunk.text}\n\`\`\`\n\n`;
+        });
+        userContent += '---\n\n';
+    }
 
     if (code) {
         userContent += `**Language:** ${language || 'Unknown'}\n\n`;
@@ -65,104 +112,49 @@ function buildAIMessages(action, code, language, prompt, conversationHistory) {
         userContent = 'Please analyze the code above.';
     }
 
-    messages.push({ role: 'user', content: userContent });
+    // Phase 8: Multi-modal support — if image is provided, use content array
+    if (imageBase64) {
+        const mimeMatch = imageBase64.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+        const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+        const base64Data = imageBase64.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
+
+        messages.push(new HumanMessage({
+            content: [
+                {
+                    type: 'text',
+                    text: userContent || 'Analyze this image and generate the corresponding code.',
+                },
+                {
+                    type: 'image_url',
+                    image_url: {
+                        url: `data:${mimeType};base64,${base64Data}`,
+                    },
+                },
+            ],
+        }));
+    } else {
+        messages.push(new HumanMessage(userContent));
+    }
+
     return messages;
 }
 
-function requestAI(body) {
-    const payload = JSON.stringify(body);
+// ─── RAG retrieval helper (Phase 4) ───
+async function getRAGContext(roomId, query) {
+    if (!roomId || !query) return [];
 
-    return new Promise((resolve, reject) => {
-        const url = new URL('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
-        const request = https.request(
-            url,
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${process.env.API_KEY}`,
-                    'Content-Length': Buffer.byteLength(payload),
-                },
-            },
-            (response) => {
-                let rawData = '';
-
-                response.setEncoding('utf8');
-                response.on('data', (chunk) => {
-                    rawData += chunk;
-                });
-                response.on('end', () => {
-                    try {
-                        resolve({
-                            ok: response.statusCode >= 200 && response.statusCode < 300,
-                            statusCode: response.statusCode,
-                            data: JSON.parse(rawData),
-                        });
-                    } catch (parseError) {
-                        resolve({
-                            ok: false,
-                            statusCode: response.statusCode,
-                            data: {
-                                error:
-                                    rawData ||
-                                    `AI API returned non-JSON (${parseError.message})`,
-                            },
-                        });
-                    }
-                });
-            }
-        );
-
-        request.setTimeout(AI_TIMEOUT_MS, () => {
-            request.destroy(new Error(`AI API request timed out (${Math.round(AI_TIMEOUT_MS / 1000)}s).`));
-        });
-
-        request.on('error', reject);
-        request.write(payload);
-        request.end();
-    });
+    try {
+        const { searchSimilar } = require('./vectorStoreService');
+        const results = await searchSimilar(roomId, query, 5);
+        return results;
+    } catch (error) {
+        // Vector store may not be initialized yet — fail silently
+        console.warn('RAG retrieval skipped:', error.message);
+        return [];
+    }
 }
 
-async function requestAIWithRetry(body) {
-    let lastError = null;
-
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            const response = await requestAI(body);
-
-            if (response.ok || !RETRYABLE_STATUS_CODES.has(response.statusCode) || attempt === MAX_RETRIES) {
-                return response;
-            }
-
-            lastError = new Error(readAIError(response));
-        } catch (error) {
-            lastError = error;
-
-            if (attempt === MAX_RETRIES) {
-                throw error;
-            }
-        }
-
-        await wait(750 * (attempt + 1));
-    }
-
-    throw lastError || new Error('AI API request failed.');
-}
-
-function readAIError(response) {
-    if (response.data && response.data.error && response.data.error.message) {
-        return response.data.error.message;
-    }
-
-    if (response.data && response.data.error) {
-        return typeof response.data.error === 'string'
-            ? response.data.error
-            : JSON.stringify(response.data.error);
-    }
-
-    return `AI API request failed with status ${response.statusCode}`;
-}
-
+// ─── Main askAI function ───
 async function askAI(options) {
     const action = options.action || 'chat';
 
@@ -172,8 +164,8 @@ async function askAI(options) {
         throw error;
     }
 
-    if (!options.code && !options.prompt) {
-        const error = new Error('Either code or prompt is required.');
+    if (!options.code && !options.prompt && !options.imageBase64) {
+        const error = new Error('Either code, prompt, or image is required.');
         error.statusCode = 400;
         throw error;
     }
@@ -184,66 +176,134 @@ async function askAI(options) {
         throw error;
     }
 
-    const messages = buildAIMessages(
+    // Phase 4: RAG — retrieve relevant code context
+    const ragQuery = options.prompt || options.code || '';
+    const ragContext = await getRAGContext(options.roomId, ragQuery);
+
+    const messages = buildMessages(
         action,
         options.code,
         options.language,
         options.prompt,
-        options.conversationHistory
+        options.conversationHistory,
+        ragContext,
+        options.imageBase64
     );
 
     let response = null;
     let selectedModel = AI_MODELS[0] || 'gemini-2.5-flash';
+    let toolCalls = [];
 
-    for (const model of AI_MODELS) {
-        selectedModel = model;
-        response = await requestAIWithRetry({
-            model,
-            messages,
-            reasoning_effort: 'low',
-            temperature: action === 'suggest' ? 0.3 : 0.7,
-            max_tokens: action === 'suggest' ? 512 : 1024,
-            stream: false,
-        });
+    for (const modelName of AI_MODELS) {
+        selectedModel = modelName;
 
-        if (response.ok || !RETRYABLE_STATUS_CODES.has(response.statusCode)) {
-            break;
+        try {
+            const model = createModel(modelName, {
+                temperature: action === 'suggest' ? 0.3 : 0.7,
+                maxTokens: action === 'suggest' ? 512 : 2048,
+            });
+
+            // Phase 6: Bind function calling tools for bugfix/review
+            const useTools = (action === 'bugfix' || action === 'review');
+            const boundModel = useTools
+                ? model.bindTools([APPLY_FIX_TOOL])
+                : model;
+
+            response = await boundModel.invoke(messages);
+
+            // Extract tool calls if present (Phase 6)
+            if (response.tool_calls && response.tool_calls.length > 0) {
+                toolCalls = response.tool_calls.map((tc) => ({
+                    name: tc.name,
+                    args: tc.args,
+                }));
+            }
+
+            break; // success — stop trying models
+        } catch (err) {
+            console.error(`Model ${modelName} failed:`, err.message);
+            if (modelName === AI_MODELS[AI_MODELS.length - 1]) {
+                throw err;
+            }
+            // try next model
         }
     }
 
-    if (!response) {
-        const error = new Error('No AI model is configured.');
-        error.statusCode = 500;
-        throw error;
-    }
-
-    if (!response.ok) {
-        const error = new Error(readAIError(response));
-        error.statusCode = response.statusCode || 502;
-        throw error;
-    }
-
-    const responseContent =
-        response.data &&
-        response.data.choices &&
-        response.data.choices[0] &&
-        response.data.choices[0].message &&
-        response.data.choices[0].message.content;
-
-    if (!responseContent) {
+    if (!response || !response.content) {
         const error = new Error('AI returned an empty response.');
         error.statusCode = 502;
         throw error;
     }
 
-    return {
-        response: responseContent,
+    const result = {
+        response: typeof response.content === 'string'
+            ? response.content
+            : JSON.stringify(response.content),
         action,
-        model: response.data.model || selectedModel,
-        usage: response.data.usage || null,
+        model: selectedModel,
+        usage: response.usage_metadata || null,
     };
+
+    // Phase 6: Include tool calls (fixes) in response
+    if (toolCalls.length > 0) {
+        result.fixes = toolCalls
+            .filter((tc) => tc.name === 'apply_code_fix')
+            .map((tc) => tc.args);
+    }
+
+    return result;
+}
+
+// ─── Phase 2: Streaming function ───
+async function* askAIStream(options) {
+    const action = options.action || 'chat';
+
+    if (!process.env.API_KEY) {
+        throw new Error('AI API key is not configured. Add API_KEY to .env file.');
+    }
+
+    if (!options.code && !options.prompt && !options.imageBase64) {
+        throw new Error('Either code, prompt, or image is required.');
+    }
+
+    // Phase 4: RAG context
+    const ragQuery = options.prompt || options.code || '';
+    const ragContext = await getRAGContext(options.roomId, ragQuery);
+
+    const messages = buildMessages(
+        action,
+        options.code,
+        options.language,
+        options.prompt,
+        options.conversationHistory,
+        ragContext,
+        options.imageBase64
+    );
+
+    const modelName = AI_MODELS[0] || 'gemini-2.5-flash';
+    const model = createModel(modelName, {
+        temperature: action === 'suggest' ? 0.3 : 0.7,
+        maxTokens: action === 'suggest' ? 512 : 2048,
+        streaming: true,
+    });
+
+    const stream = await model.stream(messages);
+
+    for await (const chunk of stream) {
+        if (chunk.content) {
+            yield {
+                type: 'token',
+                content: typeof chunk.content === 'string'
+                    ? chunk.content
+                    : JSON.stringify(chunk.content),
+            };
+        }
+    }
+
+    yield { type: 'done', model: modelName };
 }
 
 module.exports = {
     askAI,
+    askAIStream,
 };

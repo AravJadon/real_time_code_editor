@@ -13,6 +13,8 @@ const cors = require('cors');
 const { connectDB } = require('./db');
 const runRoutes = require('./routes/runRoutes');
 const aiRoutes = require('./routes/aiRoutes');
+const chatRoutes = require('./routes/chatRoutes');
+const { router: agentRoutes, setIO: setAgentIO } = require('./routes/agentRoutes');
 const registerSocketHandlers = require('./socket/socketHandlers');
 
 const app = express();
@@ -25,10 +27,12 @@ const io = new Server(server, {
 });
 
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 app.use('/api', runRoutes);
 app.use('/api', aiRoutes);
+app.use('/api', chatRoutes);
+app.use('/api', agentRoutes);
 
 // TURN credentials endpoint — fetches from Xirsys API
 let cachedIceServers = null;
@@ -105,6 +109,7 @@ app.use((req, res, next) => {
 });
 
 registerSocketHandlers(io);
+setAgentIO(io);
 
 const PORT = process.env.PORT || 5000;
 

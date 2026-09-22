@@ -1935,6 +1935,225 @@ h3.ai-md-heading { font-size: 13px; }
 }
 
 /* ========================================================================
+   AI FEATURES — New Additions (Agent, Streaming, Fixes, Image Upload)
+   ======================================================================== */
+
+/* ─── Mode Toggle Buttons ─── */
+
+.aiAssistant__toggles {
+    display: flex;
+    gap: 6px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.aiToggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    background: transparent;
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.aiToggle:hover {
+    color: var(--text-secondary);
+    border-color: var(--border-strong);
+}
+
+.aiToggle--active {
+    background: var(--ai-subtle);
+    border-color: var(--ai-purple);
+    color: var(--ai-purple);
+    box-shadow: 0 0 8px var(--ai-glow);
+}
+
+/* ─── Header tweaks ─── */
+
+.aiAssistant__headerRight {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.aiAssistant__agentBadge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(6, 182, 212, 0.2));
+    color: var(--ai-purple);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+/* ─── Streaming Badge ─── */
+
+.aiMessage__streamingBadge {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--ai-cyan);
+    animation: streamPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes streamPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.aiMessage--streaming .aiMessage__body {
+    border-left: 2px solid var(--ai-cyan);
+    padding-left: 8px;
+}
+
+/* ─── Tool Log (Agent) ─── */
+
+.aiMessage--toolLog {
+    border-left: 3px solid var(--amber);
+    background: rgba(251, 191, 36, 0.04) !important;
+}
+
+.aiMessage--toolLog .aiMessage__body {
+    font-size: 11.5px;
+    opacity: 0.85;
+}
+
+/* ─── Apply Fix Buttons (Function Calling) ─── */
+
+.aiMessage__fixes {
+    margin-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 10px;
+}
+
+.aiMessage__fixesHeader {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--green);
+    margin-bottom: 8px;
+}
+
+.aiMessage__fix {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(74, 222, 128, 0.06);
+    border: 1px solid rgba(74, 222, 128, 0.15);
+    border-radius: 8px;
+    margin-bottom: 6px;
+}
+
+.aiMessage__fixInfo {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.aiMessage__fixFile {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.aiMessage__fixDesc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.aiMessage__applyBtn {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 12px;
+    background: rgba(74, 222, 128, 0.1);
+    border: 1px solid rgba(74, 222, 128, 0.3);
+    border-radius: 6px;
+    color: var(--green);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.aiMessage__applyBtn:hover {
+    background: rgba(74, 222, 128, 0.2);
+    border-color: var(--green);
+    box-shadow: 0 0 12px rgba(74, 222, 128, 0.15);
+}
+
+/* ─── Image Upload ─── */
+
+.aiAssistant__imageBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+}
+
+.aiAssistant__imageBtn:hover:not(:disabled) {
+    color: var(--ai-purple);
+    background: var(--ai-subtle);
+}
+
+.aiAssistant__imageBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.aiAssistant__imagePreview {
+    position: relative;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.aiAssistant__imagePreview img {
+    width: 80px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border-strong);
+}
+
+.aiAssistant__imageRemove {
+    position: absolute;
+    top: 2px;
+    left: 84px;
+    width: 20px;
+    height: 20px;
+    border: none;
+    background: var(--red);
+    color: white;
+    border-radius: 50%;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+}
+
+/* ========================================================================
    EDITOR CONTEXT MENU
    ======================================================================== */
 

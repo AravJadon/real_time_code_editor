@@ -34,6 +34,14 @@ const TrashIcon = () => (
     </svg>
 );
 
+const ImageIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+        <circle cx="8.5" cy="8.5" r="1.5" />
+        <polyline points="21 15 16 10 5 21" />
+    </svg>
+);
+
 /* ─── Lightweight Markdown Renderer ─── */
 
 function renderMarkdown(text) {
@@ -61,8 +69,6 @@ function renderMarkdown(text) {
                 <div className="ai-code-block" key={key++}>
                     {lang && <span className="ai-code-lang">{lang}</span>}
                     <pre><code>{codeLines.join('\n')}</code></pre>
-                    {/* <pre> ka matlab Preformatted Text.
-                    Ye spaces aur newlines ko preserve karta hai. */}
                     <CopyButton text={codeLines.join('\n')} />
                 </div>
             );
@@ -194,13 +200,19 @@ const QUICK_ACTIONS = [
 
 /* ─── Main Component ─── */
 
-const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) => {
+const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, roomId, onApplyCode }) => {
     const [messages, setMessages] = useState([]);
     const [inputValue, setInputValue] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [isAgentMode, setIsAgentMode] = useState(false);
+    const [imagePreview, setImagePreview] = useState(null);
+    const [imageBase64, setImageBase64] = useState(null);
+    const [useStreaming, setUseStreaming] = useState(true);
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null);
     const lastTriggerIdRef = useRef(null);
+    const fileInputRef = useRef(null);
+    const historyLoadedRef = useRef(false);
 
     const scrollToBottom = useCallback(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -210,9 +222,39 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
         scrollToBottom();
     }, [messages, isLoading, scrollToBottom]);
 
-    const sendAIRequest = useCallback(async (action, customPrompt) => {
-        if (isLoading) return;
+    // Phase 5: Load chat history on mount
+    useEffect(() => {
+        if (!roomId || historyLoadedRef.current) return;
+        historyLoadedRef.current = true;
 
+        async function loadHistory() {
+            try {
+                const response = await fetch(`${backendUrl}/api/chat/${roomId}`);
+                if (!response.ok) return;
+                const data = await response.json();
+                if (data.messages && data.messages.length > 0) {
+                    const loaded = data.messages.map((msg, idx) => ({
+                        id: `history-${idx}`,
+                        role: msg.role,
+                        action: msg.action || 'chat',
+                        content: msg.content,
+                        rawContent: msg.content,
+                        model: msg.model || null,
+                        fixes: msg.fixes || [],
+                        timestamp: new Date(msg.createdAt).toLocaleTimeString(),
+                    }));
+                    setMessages(loaded);
+                }
+            } catch (err) {
+                console.warn('Failed to load chat history:', err.message);
+            }
+        }
+
+        loadHistory();
+    }, [roomId, backendUrl]);
+
+    // ─── Standard (non-streaming) AI request ───
+    const sendStandardRequest = useCallback(async (action, customPrompt) => {
         const userMessage = {
             id: Date.now(),
             role: 'user',
@@ -225,7 +267,6 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
         setIsLoading(true);
 
         try {
-            // Build conversation history for chat mode
             const conversationHistory = action === 'chat'
                 ? messages.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({
                     role: m.role,
@@ -233,16 +274,24 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                 }))
                 : [];
 
+            const body = {
+                action,
+                code: code || '',
+                language: language || 'javascript',
+                prompt: customPrompt || '',
+                conversationHistory,
+                roomId: roomId || '',
+            };
+
+            // Phase 8: Multi-modal — attach image if present
+            if (imageBase64) {
+                body.imageBase64 = imageBase64;
+            }
+
             const response = await fetch(`${backendUrl}/api/ai`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    action,
-                    code: code || '',
-                    language: language || 'javascript',
-                    prompt: customPrompt || '',
-                    conversationHistory,
-                }),
+                body: JSON.stringify(body),
             });
 
             const data = await response.json();
@@ -259,6 +308,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                 rawContent: data.response,
                 model: data.model,
                 usage: data.usage,
+                fixes: data.fixes || [],
                 timestamp: new Date().toLocaleTimeString(),
             };
 
@@ -273,8 +323,210 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
             setMessages((prev) => [...prev, errorMessage]);
         } finally {
             setIsLoading(false);
+            clearImage();
         }
-    }, [isLoading, code, language, fileName, backendUrl, messages]);
+    }, [code, language, fileName, backendUrl, messages, roomId, imageBase64]);
+
+    // ─── Phase 2: Streaming AI request ───
+    const sendStreamingRequest = useCallback(async (action, customPrompt) => {
+        const userMessage = {
+            id: Date.now(),
+            role: 'user',
+            action,
+            content: customPrompt || `${QUICK_ACTIONS.find((a) => a.id === action)?.label || action}: ${fileName || 'current code'}`,
+            timestamp: new Date().toLocaleTimeString(),
+        };
+
+        const aiMessageId = Date.now() + 1;
+        const aiMessage = {
+            id: aiMessageId,
+            role: 'assistant',
+            action,
+            content: '',
+            rawContent: '',
+            model: '',
+            isStreaming: true,
+            timestamp: new Date().toLocaleTimeString(),
+        };
+
+        setMessages((prev) => [...prev, userMessage, aiMessage]);
+        setIsLoading(true);
+
+        try {
+            const conversationHistory = action === 'chat'
+                ? messages.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({
+                    role: m.role,
+                    content: m.rawContent || m.content,
+                }))
+                : [];
+
+            const body = {
+                action,
+                code: code || '',
+                language: language || 'javascript',
+                prompt: customPrompt || '',
+                conversationHistory,
+                roomId: roomId || '',
+            };
+
+            if (imageBase64) {
+                body.imageBase64 = imageBase64;
+            }
+
+            const response = await fetch(`${backendUrl}/api/ai/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullContent = '';
+            let modelName = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const text = decoder.decode(value, { stream: true });
+                const lines = text.split('\n');
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed.type === 'token') {
+                            fullContent += parsed.content;
+                            setMessages((prev) =>
+                                prev.map((m) =>
+                                    m.id === aiMessageId
+                                        ? { ...m, content: fullContent, rawContent: fullContent }
+                                        : m
+                                )
+                            );
+                        } else if (parsed.type === 'done') {
+                            modelName = parsed.model || '';
+                        } else if (parsed.type === 'error') {
+                            throw new Error(parsed.error);
+                        }
+                    } catch (parseErr) {
+                        if (parseErr.message && !parseErr.message.includes('JSON')) {
+                            throw parseErr;
+                        }
+                    }
+                }
+            }
+
+            // Finalize the streaming message
+            setMessages((prev) =>
+                prev.map((m) =>
+                    m.id === aiMessageId
+                        ? { ...m, isStreaming: false, model: modelName }
+                        : m
+                )
+            );
+        } catch (error) {
+            setMessages((prev) => [
+                ...prev.filter((m) => m.id !== aiMessageId || m.content),
+                {
+                    id: Date.now() + 2,
+                    role: 'error',
+                    content: error.message || 'Streaming failed.',
+                    timestamp: new Date().toLocaleTimeString(),
+                },
+            ]);
+        } finally {
+            setIsLoading(false);
+            clearImage();
+        }
+    }, [code, language, fileName, backendUrl, messages, roomId, imageBase64]);
+
+    // ─── Phase 7: Agent mode request ───
+    const sendAgentRequest = useCallback(async (customPrompt) => {
+        const userMessage = {
+            id: Date.now(),
+            role: 'user',
+            action: 'agent',
+            content: customPrompt,
+            timestamp: new Date().toLocaleTimeString(),
+        };
+
+        setMessages((prev) => [...prev, userMessage]);
+        setIsLoading(true);
+
+        try {
+            const response = await fetch(`${backendUrl}/api/agent`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt: customPrompt,
+                    roomId: roomId || '',
+                }),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || `Agent failed (${response.status})`);
+            }
+
+            // Show tool call log
+            if (data.toolCalls && data.toolCalls.length > 0) {
+                const toolLogMessage = {
+                    id: Date.now() + 1,
+                    role: 'assistant',
+                    action: 'agent-tools',
+                    content: data.toolCalls.map((tc) =>
+                        `🔧 **${tc.tool}**(${JSON.stringify(tc.args).slice(0, 80)}…)\n→ ${tc.result.slice(0, 200)}${tc.result.length > 200 ? '…' : ''}`
+                    ).join('\n\n'),
+                    rawContent: JSON.stringify(data.toolCalls, null, 2),
+                    isToolLog: true,
+                    timestamp: new Date().toLocaleTimeString(),
+                };
+                setMessages((prev) => [...prev, toolLogMessage]);
+            }
+
+            const aiMessage = {
+                id: Date.now() + 2,
+                role: 'assistant',
+                action: 'agent',
+                content: data.response,
+                rawContent: data.response,
+                model: data.model,
+                iterations: data.iterations,
+                timestamp: new Date().toLocaleTimeString(),
+            };
+
+            setMessages((prev) => [...prev, aiMessage]);
+        } catch (error) {
+            setMessages((prev) => [...prev, {
+                id: Date.now() + 1,
+                role: 'error',
+                content: error.message || 'Agent execution failed.',
+                timestamp: new Date().toLocaleTimeString(),
+            }]);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [backendUrl, roomId]);
+
+    // ─── Dispatch to the right handler ───
+    const sendAIRequest = useCallback(async (action, customPrompt) => {
+        if (isLoading) return;
+
+        if (isAgentMode && (action === 'chat' || !action)) {
+            return sendAgentRequest(customPrompt);
+        }
+
+        if (useStreaming && action !== 'suggest') {
+            return sendStreamingRequest(action, customPrompt);
+        }
+
+        return sendStandardRequest(action, customPrompt);
+    }, [isLoading, isAgentMode, useStreaming, sendAgentRequest, sendStreamingRequest, sendStandardRequest]);
 
     useEffect(() => {
         if (triggerAction && triggerAction.action && triggerAction.id !== lastTriggerIdRef.current) {
@@ -290,14 +542,22 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
     const handleSendMessage = useCallback((e) => {
         e.preventDefault();
         const trimmed = inputValue.trim();
-        if (!trimmed) return;
+        if (!trimmed && !imageBase64) return;
         setInputValue('');
         sendAIRequest('chat', trimmed);
-    }, [inputValue, sendAIRequest]);
+    }, [inputValue, imageBase64, sendAIRequest]);
 
-    const handleClearChat = useCallback(() => {
+    const handleClearChat = useCallback(async () => {
         setMessages([]);
-    }, []);
+        // Phase 5: Clear from DB too
+        if (roomId) {
+            try {
+                await fetch(`${backendUrl}/api/chat/${roomId}`, { method: 'DELETE' });
+            } catch {
+                // ignore
+            }
+        }
+    }, [roomId, backendUrl]);
 
     const handleKeyDown = useCallback((e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -306,6 +566,42 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
         }
     }, [handleSendMessage]);
 
+    // ─── Phase 8: Image handling ───
+    const handleImageSelect = useCallback((e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        if (!file.type.startsWith('image/')) {
+            return;
+        }
+
+        if (file.size > 5 * 1024 * 1024) {
+            return; // Max 5MB
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            setImageBase64(reader.result);
+            setImagePreview(URL.createObjectURL(file));
+        };
+        reader.readAsDataURL(file);
+    }, []);
+
+    const clearImage = useCallback(() => {
+        setImagePreview(null);
+        setImageBase64(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    }, []);
+
+    // ─── Phase 6: Apply fix handler ───
+    const handleApplyFix = useCallback((fix) => {
+        if (onApplyCode && fix.newCode) {
+            onApplyCode(fix.newCode, fix.fileName);
+        }
+    }, [onApplyCode]);
+
     return (
         <div className="aiAssistant">
             {/* Header */}
@@ -313,57 +609,103 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                 <div className="aiAssistant__headerLeft">
                     <span className="aiAssistant__sparkle"><SparkleIcon /></span>
                     <span className="aiAssistant__title">AI Assistant</span>
-                    <span className="aiAssistant__model">Gemini Flash</span>
+                    {isAgentMode && <span className="aiAssistant__agentBadge">🤖 Agent</span>}
+                    {!isAgentMode && <span className="aiAssistant__model">
+                        {useStreaming ? '⚡ Stream' : 'Gemini'}
+                    </span>}
                 </div>
-                {messages.length > 0 && (
-                    <button className="aiAssistant__clearBtn" onClick={handleClearChat} title="Clear conversation">
-                        <TrashIcon />
-                    </button>
-                )}
+                <div className="aiAssistant__headerRight">
+                    {messages.length > 0 && (
+                        <button className="aiAssistant__clearBtn" onClick={handleClearChat} title="Clear conversation">
+                            <TrashIcon />
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            {/* Mode Toggles */}
+            <div className="aiAssistant__toggles">
+                <button
+                    className={`aiToggle ${isAgentMode ? 'aiToggle--active' : ''}`}
+                    onClick={() => setIsAgentMode(!isAgentMode)}
+                    title="Agent mode: AI can search code, create files, and run code autonomously"
+                >
+                    🤖 Agent
+                </button>
+                <button
+                    className={`aiToggle ${useStreaming ? 'aiToggle--active' : ''}`}
+                    onClick={() => setUseStreaming(!useStreaming)}
+                    title="Stream responses word by word"
+                >
+                    ⚡ Stream
+                </button>
             </div>
 
             {/* Quick Actions */}
-            <div className="aiAssistant__actions">
-                {QUICK_ACTIONS.map((action) => (
-                    <button
-                        key={action.id}
-                        className="aiAction"
-                        onClick={() => handleQuickAction(action.id)}
-                        disabled={isLoading || (!code && action.id !== 'suggest')}
-                        title={action.desc}
-                    >
-                        <span className="aiAction__icon">{action.icon}</span>
-                        <span className="aiAction__label">{action.label}</span>
-                    </button>
-                ))}
-            </div>
+            {!isAgentMode && (
+                <div className="aiAssistant__actions">
+                    {QUICK_ACTIONS.map((action) => (
+                        <button
+                            key={action.id}
+                            className="aiAction"
+                            onClick={() => handleQuickAction(action.id)}
+                            disabled={isLoading || (!code && action.id !== 'suggest')}
+                            title={action.desc}
+                        >
+                            <span className="aiAction__icon">{action.icon}</span>
+                            <span className="aiAction__label">{action.label}</span>
+                        </button>
+                    ))}
+                </div>
+            )}
 
             {/* Messages */}
             <div className="aiAssistant__messages">
                 {messages.length === 0 && !isLoading && (
                     <div className="aiAssistant__welcome">
                         <div className="aiAssistant__welcomeIcon">🤖</div>
-                        <h3>AI Code Assistant</h3>
-                        <p>Use the quick actions above or type a question about your code below.</p>
+                        <h3>{isAgentMode ? 'AI Agent Mode' : 'AI Code Assistant'}</h3>
+                        <p>
+                            {isAgentMode
+                                ? 'The agent can search code, create files, and run code autonomously. Try: "Create a hello.py and run it"'
+                                : 'Use the quick actions above or type a question about your code below.'
+                            }
+                        </p>
                         <div className="aiAssistant__welcomeHints">
-                            <span>💡 "Optimize this function"</span>
-                            <span>💡 "Add error handling"</span>
-                            <span>💡 "What does this do?"</span>
+                            {isAgentMode ? (
+                                <>
+                                    <span>💡 "Create a sorting utility and test it"</span>
+                                    <span>💡 "Find all database queries in this project"</span>
+                                    <span>💡 "Create a REST API endpoint for users"</span>
+                                </>
+                            ) : (
+                                <>
+                                    <span>💡 "Optimize this function"</span>
+                                    <span>💡 "Add error handling"</span>
+                                    <span>💡 "What does this do?"</span>
+                                </>
+                            )}
                         </div>
                     </div>
                 )}
 
                 {messages.map((msg) => (
-                    <div key={msg.id} className={`aiMessage aiMessage--${msg.role}`}>
+                    <div key={msg.id} className={`aiMessage aiMessage--${msg.role} ${msg.isToolLog ? 'aiMessage--toolLog' : ''} ${msg.isStreaming ? 'aiMessage--streaming' : ''}`}>
                         <div className="aiMessage__header">
                             <span className="aiMessage__avatar">
-                                {msg.role === 'user' ? '👤' : msg.role === 'error' ? '⚠️' : '🤖'}
+                                {msg.role === 'user' ? '👤' : msg.role === 'error' ? '⚠️' : msg.isToolLog ? '🔧' : '🤖'}
                             </span>
                             <span className="aiMessage__sender">
-                                {msg.role === 'user' ? 'You' : msg.role === 'error' ? 'Error' : 'AI Assistant'}
+                                {msg.role === 'user' ? 'You' : msg.role === 'error' ? 'Error' : msg.isToolLog ? 'Tool Calls' : 'AI Assistant'}
                             </span>
                             {msg.action && msg.role === 'user' && (
                                 <span className="aiMessage__action">{msg.action}</span>
+                            )}
+                            {msg.isStreaming && (
+                                <span className="aiMessage__streamingBadge">⚡ streaming</span>
+                            )}
+                            {msg.iterations && (
+                                <span className="aiMessage__action">🔧 {msg.iterations} tool calls</span>
                             )}
                             <span className="aiMessage__time">{msg.timestamp}</span>
                         </div>
@@ -376,7 +718,30 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                                 <p>{msg.content}</p>
                             )}
                         </div>
-                        {msg.role === 'assistant' && (
+
+                        {/* Phase 6: Apply Fix buttons */}
+                        {msg.fixes && msg.fixes.length > 0 && (
+                            <div className="aiMessage__fixes">
+                                <div className="aiMessage__fixesHeader">💡 Suggested Fixes:</div>
+                                {msg.fixes.map((fix, fixIdx) => (
+                                    <div key={fixIdx} className="aiMessage__fix">
+                                        <div className="aiMessage__fixInfo">
+                                            <span className="aiMessage__fixFile">📄 {fix.fileName}</span>
+                                            <span className="aiMessage__fixDesc">{fix.description}</span>
+                                        </div>
+                                        <button
+                                            className="aiMessage__applyBtn"
+                                            onClick={() => handleApplyFix(fix)}
+                                            title="Apply this fix to the editor"
+                                        >
+                                            ✅ Apply Fix
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {msg.role === 'assistant' && !msg.isToolLog && (
                             <div className="aiMessage__footer">
                                 <CopyButton text={msg.rawContent || msg.content} />
                                 {msg.model && <span className="aiMessage__model">{msg.model}</span>}
@@ -385,11 +750,11 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                     </div>
                 ))}
 
-                {isLoading && (
+                {isLoading && !messages.some((m) => m.isStreaming) && (
                     <div className="aiMessage aiMessage--assistant aiMessage--loading">
                         <div className="aiMessage__header">
-                            <span className="aiMessage__avatar">🤖</span>
-                            <span className="aiMessage__sender">AI Assistant</span>
+                            <span className="aiMessage__avatar">{isAgentMode ? '🤖' : '🤖'}</span>
+                            <span className="aiMessage__sender">{isAgentMode ? 'Agent Working…' : 'AI Assistant'}</span>
                         </div>
                         <div className="aiTyping">
                             <span className="aiTyping__dot" />
@@ -402,12 +767,36 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                 <div ref={messagesEndRef} />
             </div>
 
+            {/* Image Preview */}
+            {imagePreview && (
+                <div className="aiAssistant__imagePreview">
+                    <img src={imagePreview} alt="Upload preview" />
+                    <button className="aiAssistant__imageRemove" onClick={clearImage}>✕</button>
+                </div>
+            )}
+
             {/* Input */}
             <form className="aiAssistant__input" onSubmit={handleSendMessage}>
+                <input
+                    type="file"
+                    accept="image/*"
+                    ref={fileInputRef}
+                    style={{ display: 'none' }}
+                    onChange={handleImageSelect}
+                />
+                <button
+                    type="button"
+                    className="aiAssistant__imageBtn"
+                    onClick={() => fileInputRef.current?.click()}
+                    title="Upload image (screenshot → code)"
+                    disabled={isLoading}
+                >
+                    <ImageIcon />
+                </button>
                 <textarea
                     ref={inputRef}
                     className="aiAssistant__textarea"
-                    placeholder="Ask about your code…"
+                    placeholder={isAgentMode ? 'Give the agent a task…' : 'Ask about your code…'}
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
                     onKeyDown={handleKeyDown}
@@ -417,7 +806,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction }) =>
                 <button
                     type="submit"
                     className="aiAssistant__sendBtn"
-                    disabled={isLoading || !inputValue.trim()}
+                    disabled={isLoading || (!inputValue.trim() && !imageBase64)}
                     title="Send message"
                 >
                     <SendIcon />

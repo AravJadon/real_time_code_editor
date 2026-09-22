@@ -1,5 +1,6 @@
 const ACTIONS = require('../Actions');
 const fileService = require('../services/fileService');
+const vectorStore = require('../services/vectorStoreService');
 
 const userSocketMap = {};
 const callParticipantsByRoom = new Map();
@@ -28,6 +29,11 @@ function registerSocketHandlers(io) {
                 io.to(socket.id).emit(ACTIONS.SYNC_FILES, {
                     files,
                     mainFileId: room.mainFileId,
+                });
+
+                // Phase 3: Index all files for RAG on room join
+                vectorStore.indexAllFiles(roomId, files).catch((err) => {
+                    console.warn('Background indexing on join failed:', err.message);
                 });
 
                 sendCallRoomInfoToSocket(io, socket, roomId);
@@ -70,6 +76,11 @@ function registerSocketHandlers(io) {
 
                 await fileService.deleteFileRecursive(fileId);
                 io.in(roomId).emit(ACTIONS.FILE_DELETE, { fileId, allDeletedIds });
+
+                // Phase 3: Remove embeddings for deleted files
+                for (const deletedId of allDeletedIds) {
+                    vectorStore.removeFileEmbeddings(roomId, deletedId).catch(() => {});
+                }
             } catch (error) {
                 console.error('Error deleting file:', error);
             }
@@ -91,6 +102,13 @@ function registerSocketHandlers(io) {
 
             try {
                 await fileService.updateFileCode(fileId, code);
+
+                // Phase 3: Debounced re-index for RAG
+                const files = await fileService.findFilesByRoom(roomId);
+                const file = files.find((f) => (f._id.toString ? f._id.toString() : f._id) === fileId);
+                if (file) {
+                    vectorStore.indexFileDebounced(roomId, fileId, file.name, code, file.language);
+                }
             } catch (error) {
                 console.error('Error saving code change:', error);
             }

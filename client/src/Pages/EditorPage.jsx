@@ -477,6 +477,29 @@ const EditorPage = () => {
         });
     }, []);
 
+    // Phase 6: Apply code from AI fix
+    const handleApplyCode = useCallback((newCode, fixFileName) => {
+        if (!newCode) return;
+        // If the fix is for the active file or no specific file, apply directly
+        if (!fixFileName || (activeFile && activeFile.name === fixFileName)) {
+            codeRef.current = newCode;
+            // Trigger a code change event to update the editor and broadcast
+            if (socketClient && activeFileId) {
+                socketClient.emit(ACTIONS.CODE_CHANGE, {
+                    roomId,
+                    fileId: activeFileId,
+                    code: newCode,
+                });
+            }
+            // Force editor to re-render by updating the file in state
+            setFiles((prev) =>
+                prev.map((f) =>
+                    f._id === activeFileId ? { ...f, code: newCode } : f
+                )
+            );
+        }
+    }, [activeFile, activeFileId, socketClient, roomId]);
+
     if (!location.state) {
         return <Navigate to="/" />;
     }
@@ -597,6 +620,8 @@ const EditorPage = () => {
             fileName={activeFile ? activeFile.name : ''}
             backendUrl={BACKEND_URL}
             triggerAction={aiTriggerAction}
+            roomId={roomId}
+            onApplyCode={handleApplyCode}
         />
     );
 
