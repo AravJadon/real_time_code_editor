@@ -281,6 +281,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
                 prompt: customPrompt || '',
                 conversationHistory,
                 roomId: roomId || '',
+                fileName: fileName || '',
             };
 
             // Phase 8: Multi-modal — attach image if present
@@ -309,6 +310,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
                 model: data.model,
                 usage: data.usage,
                 fixes: data.fixes || [],
+                ragSources: data.ragSources || [],
                 timestamp: new Date().toLocaleTimeString(),
             };
 
@@ -367,6 +369,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
                 prompt: customPrompt || '',
                 conversationHistory,
                 roomId: roomId || '',
+                fileName: fileName || '',
             };
 
             if (imageBase64) {
@@ -383,6 +386,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
             const decoder = new TextDecoder();
             let fullContent = '';
             let modelName = '';
+            let ragSources = [];
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -409,6 +413,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
                             );
                         } else if (parsed.type === 'done') {
                             modelName = parsed.model || '';
+                            ragSources = parsed.ragSources || [];
                         } else if (parsed.type === 'error') {
                             throw new Error(parsed.error);
                         }
@@ -424,7 +429,7 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
             setMessages((prev) =>
                 prev.map((m) =>
                     m.id === aiMessageId
-                        ? { ...m, isStreaming: false, model: modelName }
+                        ? { ...m, isStreaming: false, model: modelName, ragSources }
                         : m
                 )
             );
@@ -738,6 +743,19 @@ const AIAssistant = ({ code, language, fileName, backendUrl, triggerAction, room
                                         </button>
                                     </div>
                                 ))}
+                            </div>
+                        )}
+
+                        {/* RAG Context indicator */}
+                        {msg.ragSources && msg.ragSources.length > 0 && (
+                            <div className="aiMessage__ragBadge">
+                                <span className="aiMessage__ragIcon">📚</span>
+                                <span className="aiMessage__ragLabel">RAG Context Used</span>
+                                <span className="aiMessage__ragFiles">
+                                    {[...new Set(msg.ragSources.map(s => s.fileName))].map((name, i) => (
+                                        <span key={i} className="aiMessage__ragFile">{name}</span>
+                                    ))}
+                                </span>
                             </div>
                         )}
 

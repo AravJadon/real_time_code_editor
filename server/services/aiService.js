@@ -22,6 +22,18 @@ const AI_SYSTEM_PROMPTS = {
         'You are an expert AI coding assistant embedded in SyncCode, a real-time collaborative code editor. Help developers write better code. Be concise, helpful, and format responses in markdown.',
 };
 
+// Retrieval gives the model a partial view by design. Without this the model
+// reads "here is a chunk of index.js" as "index.js is the only file that exists"
+// and tells the user so.
+const CONTEXT_GUIDANCE = [
+    '',
+    'Context rules:',
+    '- A list of every file in the project may be provided below. It is authoritative and complete: never claim you can only see one file, and never say a file is missing if it appears in that list.',
+    '- Retrieved code excerpts are the most relevant snippets found, not the whole project. Their absence does not mean code does not exist.',
+    '- If you need a file that was not included, say which one and ask for it, rather than guessing at its contents.',
+    '- Cite files by name when you refer to them.',
+].join('\n');
+
 // ─── Function calling schema for Apply Fix (Phase 6) ───
 const APPLY_FIX_TOOL = {
     type: 'function',
@@ -72,8 +84,13 @@ function trimText(value, maxLength) {
 }
 
 // ─── Build LangChain messages ───
-function buildMessages(action, code, language, prompt, conversationHistory, ragContext, imageBase64) {
-    const systemPrompt = AI_SYSTEM_PROMPTS[action] || AI_SYSTEM_PROMPTS.chat;
+function buildMessages(action, code, language, prompt, conversationHistory, retrieval, imageBase64, fileName) {
+    const { ragContext = [], manifest = '', digest = '' } = retrieval || {};
+
+    const basePrompt = AI_SYSTEM_PROMPTS[action] || AI_SYSTEM_PROMPTS.chat;
+    // `suggest` must emit bare code, so it gets no prose guidance appended.
+    const systemPrompt = action === 'suggest' ? basePrompt : basePrompt + CONTEXT_GUIDANCE;
+
     const messages = [new SystemMessage(systemPrompt)];
 
     // Add conversation history for chat mode
@@ -90,16 +107,30 @@ function buildMessages(action, code, language, prompt, conversationHistory, ragC
     // Build user content
     let userContent = '';
 
+    // Project inventory — always present so "what files exist" is answerable
+    // without depending on what similarity search happened to return.
+    if (manifest) {
+        userContent += `${manifest}\n\n---\n\n`;
+    }
+
+    // Full contents, only for project-wide questions where excerpts cannot do the job.
+    if (digest) {
+        userContent += `${digest}\n\n---\n\n`;
+    }
+
     // Add RAG context if available (Phase 4)
-    if (ragContext && ragContext.length > 0) {
-        userContent += '### Relevant code from other files in this project:\n\n';
+    if (ragContext.length > 0) {
+        userContent += '### Relevant code excerpts retrieved from this project:\n\n';
         ragContext.forEach((chunk) => {
-            userContent += `**${chunk.fileName}:**\n\`\`\`${chunk.language || ''}\n${chunk.text}\n\`\`\`\n\n`;
+            const location = chunk.filePath || chunk.fileName;
+            const lines = chunk.startLine ? ` (lines ${chunk.startLine}-${chunk.endLine})` : '';
+            userContent += `**${location}**${lines}:\n\`\`\`${chunk.language || ''}\n${chunk.text}\n\`\`\`\n\n`;
         });
         userContent += '---\n\n';
     }
 
     if (code) {
+        userContent += `### File currently open in the editor${fileName ? `: ${fileName}` : ''}\n\n`;
         userContent += `**Language:** ${language || 'Unknown'}\n\n`;
         userContent += `\`\`\`${language || ''}\n${trimText(code, 10000)}\n\`\`\`\n\n`;
     }
@@ -140,18 +171,77 @@ function buildMessages(action, code, language, prompt, conversationHistory, ragC
 }
 
 // ─── RAG retrieval helper (Phase 4) ───
-async function getRAGContext(roomId, query) {
+async function getRAGContext(roomId, query, topK) {
     if (!roomId || !query) return [];
 
     try {
         const { searchSimilar } = require('./vectorStoreService');
-        const results = await searchSimilar(roomId, query, 5);
-        return results;
+        return await searchSimilar(roomId, query, topK);
     } catch (error) {
         // Vector store may not be initialized yet — fail silently
         console.warn('RAG retrieval skipped:', error.message);
         return [];
     }
+}
+
+/**
+ * Build the text actually used as the retrieval query.
+ *
+ * Embedding a whole file as the query (what the quick actions used to do) produces
+ * a vector that averages out to nothing in particular and matches everything
+ * equally badly. Distinctive identifiers make a far sharper query.
+ */
+function buildRagQuery(options) {
+    const parts = [];
+
+    if (options.fileName) parts.push(options.fileName);
+    if (options.prompt) parts.push(options.prompt);
+
+    if (!options.prompt && options.code) {
+        // No explicit question (a quick action) — distil the code into its
+        // declared names and imports instead of using the raw body.
+        const identifiers = [...options.code.matchAll(
+            /(?:function|class|const|let|var|def|func|interface|type)\s+([A-Za-z_$][\w$]*)/g
+        )].map((match) => match[1]);
+
+        const imports = [...options.code.matchAll(
+            /(?:require\(|from\s+)['"]([^'"]+)['"]/g
+        )].map((match) => match[1]);
+
+        const distinctive = [...new Set([...identifiers, ...imports])].slice(0, 30);
+
+        parts.push(distinctive.length > 0 ? distinctive.join(' ') : options.code.slice(0, 600));
+    }
+
+    return parts.join(' ').trim();
+}
+
+/**
+ * Assemble everything the model gets to see about the project.
+ */
+async function buildRetrievalContext(options) {
+    const { isProjectWideQuery, buildProjectManifest, buildProjectDigest } =
+        require('./projectContextService');
+
+    if (!options.roomId) {
+        return { ragContext: [], manifest: '', digest: '' };
+    }
+
+    const question = options.prompt || '';
+    const projectWide = isProjectWideQuery(question);
+    const ragQuery = buildRagQuery(options);
+
+    const [manifest, digest, ragContext] = await Promise.all([
+        buildProjectManifest(options.roomId),
+        projectWide ? buildProjectDigest(options.roomId) : Promise.resolve(''),
+        // A project-wide question already gets full contents; retrieval would
+        // only duplicate it, so skip the embedding round-trip.
+        projectWide
+            ? Promise.resolve([])
+            : getRAGContext(options.roomId, ragQuery, options.action === 'suggest' ? 4 : 8),
+    ]);
+
+    return { ragContext, manifest, digest, projectWide };
 }
 
 // ─── Main askAI function ───
@@ -177,8 +267,16 @@ async function askAI(options) {
     }
 
     // Phase 4: RAG — retrieve relevant code context
-    const ragQuery = options.prompt || options.code || '';
-    const ragContext = await getRAGContext(options.roomId, ragQuery);
+    const retrieval = await buildRetrievalContext({ ...options, action });
+    const { ragContext } = retrieval;
+
+    if (retrieval.projectWide) {
+        console.log('[RAG] 📚 Project-wide question — sent full manifest and file contents');
+    } else if (ragContext.length > 0) {
+        console.log(`[RAG] ✅ Retrieved ${ragContext.length} chunks from: ${[...new Set(ragContext.map(c => c.fileName))].join(', ')} (scores: ${ragContext.map(c => c.score?.toFixed(3)).join(', ')})`);
+    } else {
+        console.log('[RAG] ⚠️ No relevant context found (no files indexed or low similarity)');
+    }
 
     const messages = buildMessages(
         action,
@@ -186,8 +284,9 @@ async function askAI(options) {
         options.language,
         options.prompt,
         options.conversationHistory,
-        ragContext,
-        options.imageBase64
+        retrieval,
+        options.imageBase64,
+        options.fileName
     );
 
     let response = null;
@@ -242,6 +341,12 @@ async function askAI(options) {
         action,
         model: selectedModel,
         usage: response.usage_metadata || null,
+        ragSources: ragContext.map((c) => ({
+            fileName: c.filePath || c.fileName,
+            startLine: c.startLine,
+            endLine: c.endLine,
+            score: parseFloat((c.score || 0).toFixed(3)),
+        })),
     };
 
     // Phase 6: Include tool calls (fixes) in response
@@ -267,8 +372,14 @@ async function* askAIStream(options) {
     }
 
     // Phase 4: RAG context
-    const ragQuery = options.prompt || options.code || '';
-    const ragContext = await getRAGContext(options.roomId, ragQuery);
+    const retrieval = await buildRetrievalContext({ ...options, action });
+    const { ragContext } = retrieval;
+
+    if (retrieval.projectWide) {
+        console.log('[RAG-Stream] 📚 Project-wide question — sent full manifest and file contents');
+    } else if (ragContext.length > 0) {
+        console.log(`[RAG-Stream] ✅ Retrieved ${ragContext.length} chunks from: ${[...new Set(ragContext.map(c => c.fileName))].join(', ')}`);
+    }
 
     const messages = buildMessages(
         action,
@@ -276,8 +387,9 @@ async function* askAIStream(options) {
         options.language,
         options.prompt,
         options.conversationHistory,
-        ragContext,
-        options.imageBase64
+        retrieval,
+        options.imageBase64,
+        options.fileName
     );
 
     const modelName = AI_MODELS[0] || 'gemini-2.5-flash';
@@ -300,7 +412,16 @@ async function* askAIStream(options) {
         }
     }
 
-    yield { type: 'done', model: modelName };
+    yield {
+        type: 'done',
+        model: modelName,
+        ragSources: ragContext.map((c) => ({
+            fileName: c.filePath || c.fileName,
+            startLine: c.startLine,
+            endLine: c.endLine,
+            score: parseFloat((c.score || 0).toFixed(3)),
+        })),
+    };
 }
 
 module.exports = {

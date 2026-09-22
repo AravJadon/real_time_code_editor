@@ -5,6 +5,11 @@ const vectorStore = require('../services/vectorStoreService');
 const userSocketMap = {};
 const callParticipantsByRoom = new Map();
 
+function toFileId(value) {
+    if (value === null || value === undefined) return null;
+    return value.toString ? value.toString() : String(value);
+}
+
 function registerSocketHandlers(io) {
     io.on('connection', (socket) => {
         console.log('socket connected', socket.id);
@@ -55,6 +60,14 @@ function registerSocketHandlers(io) {
                 });
 
                 io.in(roomId).emit(ACTIONS.FILE_CREATE, { file });
+
+                // Index immediately if the new file already has content, so it is
+                // retrievable without waiting for someone to edit it.
+                if (file.type === 'file' && file.code) {
+                    vectorStore
+                        .indexFile(roomId, toFileId(file._id), file.name, file.code, file.language)
+                        .catch(() => {});
+                }
             } catch (error) {
                 console.error('Error creating file:', error);
             }
@@ -64,6 +77,14 @@ function registerSocketHandlers(io) {
             try {
                 const file = await fileService.renameFile(fileId, name);
                 io.in(roomId).emit(ACTIONS.FILE_RENAME, { file });
+
+                // The file name is part of what gets embedded, so a rename makes
+                // the stored vectors stale — force a rebuild.
+                if (file && file.type === 'file' && file.code) {
+                    vectorStore
+                        .indexFile(roomId, toFileId(file._id), name, file.code, file.language, { force: true })
+                        .catch(() => {});
+                }
             } catch (error) {
                 console.error('Error renaming file:', error);
             }
@@ -103,12 +124,20 @@ function registerSocketHandlers(io) {
             try {
                 await fileService.updateFileCode(fileId, code);
 
-                // Phase 3: Debounced re-index for RAG
-                const files = await fileService.findFilesByRoom(roomId);
-                const file = files.find((f) => (f._id.toString ? f._id.toString() : f._id) === fileId);
-                if (file) {
-                    vectorStore.indexFileDebounced(roomId, fileId, file.name, code, file.language);
-                }
+                // Phase 3: Debounced re-index for RAG. The file lookup runs inside
+                // the debounce so it happens once per pause, not once per keystroke.
+                vectorStore.indexFileDebounced(roomId, fileId, null, code, null, {
+                    resolveMeta: async () => {
+                        const files = await fileService.findFilesByRoom(roomId);
+                        const file = files.find((f) => toFileId(f._id) === fileId);
+                        if (!file) return null;
+
+                        const { buildPathMap } = require('../services/projectContextService');
+                        const filePath = buildPathMap(files).get(fileId);
+
+                        return { fileName: file.name, language: file.language, filePath };
+                    },
+                });
             } catch (error) {
                 console.error('Error saving code change:', error);
             }

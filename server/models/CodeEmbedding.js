@@ -16,6 +16,10 @@ const codeEmbeddingSchema = new mongoose.Schema(
             type: String,
             required: true,
         },
+        filePath: {
+            type: String,
+            default: '',
+        },
         language: {
             type: String,
             default: 'javascript',
@@ -27,6 +31,21 @@ const codeEmbeddingSchema = new mongoose.Schema(
         chunkIndex: {
             type: Number,
             default: 0,
+        },
+        startLine: {
+            type: Number,
+            default: 0,
+        },
+        endLine: {
+            type: Number,
+            default: 0,
+        },
+        // Hash of the whole file the chunk came from — lets indexing skip
+        // files whose content has not changed since the last pass.
+        contentHash: {
+            type: String,
+            default: '',
+            index: true,
         },
         embedding: {
             type: [Number],

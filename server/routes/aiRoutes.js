@@ -13,6 +13,7 @@ router.post('/ai', async (req, res) => {
             prompt: req.body.prompt,
             conversationHistory: req.body.conversationHistory,
             roomId: req.body.roomId,
+            fileName: req.body.fileName,
             imageBase64: req.body.imageBase64,
         });
 
@@ -69,6 +70,7 @@ router.post('/ai/stream', async (req, res) => {
             prompt: req.body.prompt,
             conversationHistory: req.body.conversationHistory,
             roomId: req.body.roomId,
+            fileName: req.body.fileName,
             imageBase64: req.body.imageBase64,
         });
 
@@ -77,7 +79,7 @@ router.post('/ai/stream', async (req, res) => {
                 fullResponse += chunk.content;
                 res.write(`data: ${JSON.stringify(chunk)}\n\n`);
             } else if (chunk.type === 'done') {
-                res.write(`data: ${JSON.stringify({ type: 'done', model: chunk.model })}\n\n`);
+                res.write(`data: ${JSON.stringify({ type: 'done', model: chunk.model, ragSources: chunk.ragSources || [] })}\n\n`);
             }
         }
 
