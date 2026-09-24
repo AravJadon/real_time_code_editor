@@ -52,9 +52,15 @@ function registerSocketHandlers(io) {
 
         socket.on(ACTIONS.FILE_CREATE, async ({ roomId, name, type, parentId }) => {
             try {
+                // Strip any directory separators — nesting is handled by parentId.
+                // Without this, a user typing "folder1/file.py" into the prompt
+                // gets a file literally named "folder1/file.py" instead of "file.py"
+                // nested inside the folder.
+                const safeName = name.replace(/\\/g, '/').split('/').filter(Boolean).pop() || name;
+
                 const file = await fileService.createFile({
                     roomId,
-                    name,
+                    name: safeName,
                     type,
                     parentId: parentId || null,
                 });

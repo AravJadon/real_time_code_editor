@@ -349,16 +349,70 @@ const EditorPage = () => {
         setLanguage(newFile?.language || DEFAULT_LANGUAGE);
     };
 
+    // Resolve a user-entered name that may contain path separators (e.g.
+    // "src/utils/helpers.js").  When a parentId is already set (the user clicked
+    // "+📄" on a folder) we just strip any leading path segments so the file is
+    // created directly inside that folder.  When parentId is null (root-level
+    // creation) we walk the path segments and look up / create intermediate
+    // folders so the file lands in the right place.
+    const resolveNameAndParent = (rawName, parentId, type) => {
+        const trimmed = rawName.trim().replace(/\\/g, '/');
+        const segments = trimmed.split('/').filter(Boolean);
+
+        if (segments.length === 0) return null;
+
+        // If already inside a folder, just use the last segment as the name
+        if (parentId) {
+            return { name: segments[segments.length - 1], parentId };
+        }
+
+        // Root-level: if a path like "folder1/file.py" was entered, resolve
+        // intermediate folders by name among existing files.
+        let currentParent = null;
+        for (let i = 0; i < segments.length - 1; i++) {
+            const folderName = segments[i];
+            const existing = files.find(
+                (f) =>
+                    f.type === 'folder' &&
+                    f.name === folderName &&
+                    (f.parentId ? String(f.parentId) : null) === (currentParent ? String(currentParent) : null)
+            );
+            if (existing) {
+                currentParent = existing._id;
+            } else {
+                // Auto-create the intermediate folder
+                socketClient?.emit(ACTIONS.FILE_CREATE, {
+                    roomId,
+                    name: folderName,
+                    type: 'folder',
+                    parentId: currentParent,
+                });
+                // We can't wait for the round-trip, so fall back to creating
+                // the file at whatever level we resolved so far.  The user can
+                // drag it later.  In practice the folder will exist before the
+                // file creation event is processed because they share the same
+                // socket connection (ordered delivery).
+                return { name: segments.slice(i).join('/'), parentId: currentParent };
+            }
+        }
+
+        return { name: segments[segments.length - 1], parentId: currentParent };
+    };
+
     const handleCreateFile = (parentId) => {
         const name = prompt('File name:');
         if (!name) return;
-        socketClient?.emit(ACTIONS.FILE_CREATE, { roomId, name, type: 'file', parentId });
+        const resolved = resolveNameAndParent(name, parentId, 'file');
+        if (!resolved) return;
+        socketClient?.emit(ACTIONS.FILE_CREATE, { roomId, name: resolved.name, type: 'file', parentId: resolved.parentId });
     };
 
     const handleCreateFolder = (parentId) => {
         const name = prompt('Folder name:');
         if (!name) return;
-        socketClient?.emit(ACTIONS.FILE_CREATE, { roomId, name, type: 'folder', parentId });
+        const resolved = resolveNameAndParent(name, parentId, 'folder');
+        if (!resolved) return;
+        socketClient?.emit(ACTIONS.FILE_CREATE, { roomId, name: resolved.name, type: 'folder', parentId: resolved.parentId });
     };
 
     const handleRename = (fileId, name) => {
